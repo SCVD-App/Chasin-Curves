@@ -1,7 +1,8 @@
 // ============================================================
 // CHASIN' CURVES — app.js
-// Scott Claude Van Dam — v1.0
-// Features: Map, Roads, Members, Garage, Trips, Points
+// Scott Claude Van Dam — v1.1
+// Features: Map, Roads, Members, Garage, Trips, Points,
+//           Extended Profile, Skills, Fast Money Q&A
 // ============================================================
 
 const { useState, useEffect, useRef, useCallback } = React;
@@ -678,147 +679,258 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onPointsEarned }) =>
   );
 };
 
-// ─── POINTS & PROFILE ─────────────────────────────────────────
+// ─── PROFILE — EXTENDED ──────────────────────────────────────
+const SKILLS_LIST = [
+  { id: "mechanical", label: "Mechanical", icon: "🔧" },
+  { id: "electrical", label: "Electrical", icon: "⚡" },
+  { id: "panel", label: "Panel Work", icon: "🔨" },
+  { id: "fabrication", label: "Fabrication", icon: "⚙️" },
+  { id: "paint", label: "Paint & Finish", icon: "🎨" },
+  { id: "upholstery", label: "Upholstery", icon: "🪡" },
+  { id: "diagnostics", label: "Diagnostics", icon: "💻" },
+  { id: "restoration", label: "Full Restoration", icon: "🏆" },
+  { id: "navigation", label: "Navigation", icon: "🧭" },
+  { id: "photography", label: "Car Photography", icon: "📸" },
+];
+
+const FAST_MONEY = [
+  { id:"q1",  question:"Holden or Ford?",              optA:"Holden 🦁",        optB:"Ford 🐎" },
+  { id:"q2",  question:"BMW or Mercedes?",             optA:"BMW 🔵",           optB:"Mercedes ⭐" },
+  { id:"q3",  question:"Harley or Triumph?",           optA:"Harley 🦅",        optB:"Triumph 🇬🇧" },
+  { id:"q4",  question:"Manual or Automatic?",         optA:"Manual 🕹",        optB:"Automatic 🤖" },
+  { id:"q5",  question:"Track day or Sunday cruise?",  optA:"Track Day 🏁",     optB:"Sunday Cruise ☕" },
+  { id:"q6",  question:"Ginger or Maryanne?",          optA:"Ginger 💃",        optB:"Maryanne 🌺" },
+  { id:"q7",  question:"Sofia Vergara or Rafael Nadal?",optA:"Sofia 🌹",        optB:"Rafa 🎾" },
+  { id:"q8",  question:"Dawn patrol or midnight run?", optA:"Dawn Patrol 🌅",   optB:"Midnight Run 🌙" },
+  { id:"q9",  question:"Original or Modified?",        optA:"Keep it Stock 🏛", optB:"Modify Everything 🔩" },
+  { id:"q10", question:"Roads or Tracks?",             optA:"Open Roads 🛣",    optB:"Race Tracks 🏎" },
+];
+
 const ProfileView = ({ member, onUpdate, pointsLog }) => {
+  const [tab, setTab] = useState("profile");
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({ displayName: member.displayName, location: member.location, bio: member.bio });
+  const [form, setForm] = useState({
+    displayName: member.displayName, location: member.location, bio: member.bio,
+    occupation: member.occupation||"", yearsEnthusiast: member.yearsEnthusiast||"",
+    favoriteEra: member.favoriteEra||"", instagram: member.instagram||"", website: member.website||"",
+  });
   const tier = getTier(member.points);
   const nextTier = TIERS.find(t => t.min > member.points);
   const progress = nextTier ? ((member.points - tier.min) / (nextTier.min - tier.min)) * 100 : 100;
   const fileRef = useRef();
 
-  const handleSave = () => {
-    onUpdate({ ...member, ...form });
-    setEditing(false);
-  };
-
+  const handleSave = () => { onUpdate({ ...member, ...form }); setEditing(false); };
   const handleAvatarUpload = e => {
-    const file = e.target.files[0];
-    if (!file) return;
+    const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
     reader.onload = ev => onUpdate({ ...member, avatar: ev.target.result });
     reader.readAsDataURL(file);
   };
+  const toggleSkill = id => {
+    const current = member.skills||[];
+    onUpdate({ ...member, skills: current.includes(id) ? current.filter(s=>s!==id) : [...current, id] });
+  };
+  const setFastMoney = (qid, answer) => {
+    onUpdate({ ...member, fastMoney: { ...(member.fastMoney||{}), [qid]: answer } });
+  };
 
   return (
-    <div style={{ padding: 20 }}>
-      {/* Profile card */}
-      <div style={{ background: "#0a0a0a", border: `1px solid ${C.border}`, borderRadius: 12, padding: 20, marginBottom: 20 }}>
-        <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-          {/* Avatar */}
-          <div style={{ position: "relative", flexShrink: 0 }}>
-            <div style={{ width: 72, height: 72, borderRadius: "50%", background: C.champagneDim, border: `2px solid ${C.champagne}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
-              {member.avatar
-                ? <img src={member.avatar} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                : <span style={{ fontSize: 28, color: C.champagne, fontFamily: "'Cormorant Garamond', serif" }}>{member.displayName[0]}</span>
-              }
+    <div style={{ display:"flex", flexDirection:"column", height:"100%" }}>
+      {/* Header always visible */}
+      <div style={{ padding:"16px 20px 0", background:C.midnight, flexShrink:0 }}>
+        <div style={{ display:"flex", gap:14, alignItems:"center", marginBottom:14 }}>
+          <div style={{ position:"relative", flexShrink:0 }}>
+            <div style={{ width:66, height:66, borderRadius:"50%", background:C.champagneDim, border:`2px solid ${C.champagne}`, display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden" }}>
+              {member.avatar ? <img src={member.avatar} style={{ width:"100%", height:"100%", objectFit:"cover" }} /> : <span style={{ fontSize:26, color:C.champagne, fontFamily:"'Cormorant Garamond', serif" }}>{member.displayName[0]}</span>}
             </div>
-            <label style={{ position: "absolute", bottom: -2, right: -2, width: 22, height: 22, background: C.champagne, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 11, border: `2px solid ${C.midnight}` }}>
-              📷<input type="file" accept="image/*" onChange={handleAvatarUpload} style={{ display: "none" }} ref={fileRef} />
+            <label style={{ position:"absolute", bottom:-2, right:-2, width:22, height:22, background:C.champagne, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", fontSize:11, border:`2px solid ${C.midnight}` }}>
+              📷<input type="file" accept="image/*" onChange={handleAvatarUpload} style={{ display:"none" }} ref={fileRef} />
             </label>
           </div>
+          <div style={{ flex:1 }}>
+            <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:20, fontWeight:600, color:C.bone, lineHeight:1.1 }}>{member.displayName}</div>
+            <div style={{ fontSize:11, color:C.dim, marginTop:2 }}>📍 {member.location}</div>
+            <div style={{ marginTop:6 }}><PointsBadge pts={member.points} /></div>
+          </div>
+        </div>
+        <div style={{ display:"flex", borderBottom:`1px solid ${C.border}`, marginLeft:-20, marginRight:-20, paddingLeft:8 }}>
+          {[["profile","Profile"],["skills","Skills"],["fastmoney","Fast Money"],["points","Points"]].map(([id,label]) => (
+            <button key={id} onClick={()=>setTab(id)} style={{ padding:"8px 12px", background:"none", border:"none", borderBottom:`2px solid ${tab===id?C.champagne:"transparent"}`, color:tab===id?C.champagne:C.dim, fontFamily:"'Josefin Sans', sans-serif", fontSize:11, cursor:"pointer", textTransform:"uppercase", letterSpacing:"0.07em", whiteSpace:"nowrap" }}>{label}</button>
+          ))}
+        </div>
+      </div>
 
-          {/* Info */}
-          <div style={{ flex: 1 }}>
-            {editing ? (
-              <>
-                <Input label="Display Name" value={form.displayName} onChange={v => setForm(f=>({...f,displayName:v}))} />
-                <Input label="Location" value={form.location} onChange={v => setForm(f=>({...f,location:v}))} />
-                <Input label="Bio" value={form.bio} onChange={v => setForm(f=>({...f,bio:v}))} multiline rows={2} />
-                <div style={{ display: "flex", gap: 8 }}>
-                  <Btn size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Btn>
-                  <Btn size="sm" onClick={handleSave}>Save</Btn>
+      <div style={{ flex:1, overflowY:"auto", padding:20 }}>
+
+        {/* PROFILE TAB */}
+        {tab==="profile" && (
+          <>
+            <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne }}>About Me</div>
+                <Btn size="sm" variant="ghost" onClick={()=>setEditing(!editing)}>{editing?"Cancel":"Edit"}</Btn>
+              </div>
+              {editing ? (
+                <>
+                  <Input label="Display Name" value={form.displayName} onChange={v=>setForm(f=>({...f,displayName:v}))} />
+                  <Input label="Location" value={form.location} onChange={v=>setForm(f=>({...f,location:v}))} placeholder="Mount Mellum, QLD" />
+                  <Input label="Bio" value={form.bio} onChange={v=>setForm(f=>({...f,bio:v}))} multiline rows={3} placeholder="Tell the community about yourself..." />
+                  <Input label="Occupation" value={form.occupation} onChange={v=>setForm(f=>({...f,occupation:v}))} placeholder="e.g. Rail Network Controller" />
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                    <Input label="Years as Enthusiast" value={form.yearsEnthusiast} onChange={v=>setForm(f=>({...f,yearsEnthusiast:v}))} placeholder="25" />
+                    <Input label="Favourite Era" value={form.favoriteEra} onChange={v=>setForm(f=>({...f,favoriteEra:v}))} placeholder="1960s–70s British" />
+                  </div>
+                  <Input label="Instagram" value={form.instagram} onChange={v=>setForm(f=>({...f,instagram:v}))} placeholder="@yourhandle" />
+                  <Input label="YouTube / Website" value={form.website} onChange={v=>setForm(f=>({...f,website:v}))} placeholder="youtube.com/yourchannel" />
+                  <Btn onClick={handleSave} style={{ width:"100%" }}>Save Profile</Btn>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize:13, color:"#aaa", lineHeight:1.7, marginBottom:12 }}>{member.bio||"No bio yet — tap Edit to add one."}</div>
+                  {[["💼 Occupation",member.occupation],["⏳ Enthusiast For",member.yearsEnthusiast?`${member.yearsEnthusiast} years`:null],["🏛 Favourite Era",member.favoriteEra],["📸 Instagram",member.instagram],["🎬 YouTube / Web",member.website]].filter(([,v])=>v).map(([label,value])=>(
+                    <div key={label} style={{ display:"flex", gap:10, padding:"6px 0", borderBottom:`1px solid ${C.border}` }}>
+                      <span style={{ fontSize:12, color:C.dim, minWidth:130 }}>{label}</span>
+                      <span style={{ fontSize:12, color:C.bone }}>{value}</span>
+                    </div>
+                  ))}
+                  {!member.occupation && !member.favoriteEra && <div style={{ fontSize:12, color:C.dim, textAlign:"center", padding:8 }}>Tap Edit to fill in your details</div>}
+                </>
+              )}
+            </div>
+            <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16 }}>
+              <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne, marginBottom:12 }}>Community Stats</div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
+                {[["🛣",member.roadsAdded?.length||0,"Roads"],["✍️",member.reviewsWritten||0,"Reviews"],["🏁",member.tripsPlanned||0,"Trips"],["🚗",member.garage?.length||0,"Vehicles"],["⭐",member.points||0,"Points"],["🏆",getTier(member.points).name,"Tier"]].map(([icon,val,label])=>(
+                  <div key={label} style={{ background:"#111", borderRadius:8, padding:"10px 8px", textAlign:"center", border:`1px solid ${C.border}` }}>
+                    <div style={{ fontSize:18 }}>{icon}</div>
+                    <div style={{ fontSize:16, fontFamily:"'Cormorant Garamond', serif", color:C.champagne, fontWeight:600, marginTop:4 }}>{val}</div>
+                    <div style={{ fontSize:9, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em", marginTop:2 }}>{label}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* SKILLS TAB */}
+        {tab==="skills" && (
+          <>
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:18, color:C.champagne, marginBottom:4 }}>Your Strengths</div>
+              <div style={{ fontSize:12, color:C.dim, lineHeight:1.6 }}>Let the community know what you bring to the shed. These show on your public profile and help members find the right person to ask.</div>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:16 }}>
+              {SKILLS_LIST.map(skill => {
+                const active = (member.skills||[]).includes(skill.id);
+                return (
+                  <div key={skill.id} onClick={()=>toggleSkill(skill.id)} style={{ padding:"12px 14px", borderRadius:10, border:`2px solid ${active?C.champagne:C.border}`, background:active?C.champagneDim:"#0a0a0a", cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}>
+                    <span style={{ fontSize:22 }}>{skill.icon}</span>
+                    <div style={{ flex:1, fontSize:13, color:active?C.champagne:C.bone, fontWeight:active?600:400 }}>{skill.label}</div>
+                    {active && <span style={{ color:C.champagne, fontSize:13 }}>✓</span>}
+                  </div>
+                );
+              })}
+            </div>
+            {(member.skills||[]).length > 0 && (
+              <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:10, padding:14 }}>
+                <div style={{ fontSize:11, color:C.champagne, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:10 }}>Your Skills Badge</div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                  {(member.skills||[]).map(id => { const s=SKILLS_LIST.find(x=>x.id===id); return s?<span key={id} style={{ fontSize:11, padding:"4px 10px", background:C.champagneDim, border:`1px solid ${C.champagne}44`, borderRadius:20, color:C.champagne }}>{s.icon} {s.label}</span>:null; })}
                 </div>
-              </>
-            ) : (
-              <>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-                  <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, fontWeight: 600, color: C.bone }}>{member.displayName}</div>
-                  <Btn size="sm" variant="ghost" onClick={() => setEditing(true)}>Edit</Btn>
-                </div>
-                <div style={{ fontSize: 11, color: C.dim, marginBottom: 6 }}>📍 {member.location}</div>
-                <div style={{ fontSize: 12, color: "#aaa", lineHeight: 1.5, marginBottom: 10 }}>{member.bio}</div>
-                <PointsBadge pts={member.points} />
-              </>
+              </div>
             )}
-          </div>
-        </div>
-      </div>
+          </>
+        )}
 
-      {/* Points & Tier */}
-      <div style={{ background: "#0a0a0a", border: `1px solid ${tier.color}44`, borderRadius: 12, padding: 18, marginBottom: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-          <div>
-            <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 18, color: tier.color }}>{tier.icon} {tier.name}</div>
-            <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>
-              {nextTier ? `${nextTier.min - member.points} points to ${nextTier.name}` : "Maximum tier achieved"}
+        {/* FAST MONEY TAB */}
+        {tab==="fastmoney" && (
+          <>
+            <div style={{ marginBottom:16 }}>
+              <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:18, color:C.champagne, marginBottom:4 }}>Fast Money</div>
+              <div style={{ fontSize:12, color:C.dim, lineHeight:1.6 }}>Ten questions. No wrong answers. Just tap your pick — shows on your public profile so people know who they're dealing with before they say g'day.</div>
             </div>
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 26, fontFamily: "'Cormorant Garamond', serif", color: C.champagne, fontWeight: 600 }}>{member.points.toLocaleString()}</div>
-            <div style={{ fontSize: 10, color: C.dim }}>total points</div>
-          </div>
-        </div>
-
-        {/* Progress bar */}
-        <div style={{ height: 4, background: "#1e1e1e", borderRadius: 2, marginBottom: 12 }}>
-          <div style={{ height: "100%", width: `${progress}%`, background: `linear-gradient(90deg, ${tier.color}, ${C.champagneLight})`, borderRadius: 2, transition: "width 0.6s ease" }} />
-        </div>
-
-        {/* Tier list */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
-          {TIERS.map(t => (
-            <div key={t.name} style={{ textAlign: "center", opacity: member.points >= t.min ? 1 : 0.3 }}>
-              <div style={{ fontSize: 18 }}>{t.icon}</div>
-              <div style={{ fontSize: 9, color: t.color, textTransform: "uppercase", letterSpacing: "0.05em" }}>{t.name}</div>
-              <div style={{ fontSize: 9, color: C.dim }}>{t.min === 0 ? "0" : t.min.toLocaleString()}</div>
-            </div>
-          ))}
-        </div>
-
-        <div style={{ marginTop: 14, padding: 10, background: "#111", borderRadius: 8, fontSize: 11, color: C.dim, lineHeight: 1.6 }}>
-          ⏱ Points expire after <span style={{ color: C.champagne }}>90 days</span> of inactivity — plenty of buffer for an overseas trip. Keep Chasing Curves to maintain your tier.
-        </div>
-      </div>
-
-      {/* Points how-to */}
-      <div style={{ background: "#0a0a0a", border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
-        <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 16, color: C.champagne, marginBottom: 12 }}>How to Earn Points</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-          {Object.entries(POINT_ACTIONS).map(([key, { points, label, icon }]) => (
-            <div key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: `1px solid ${C.border}` }}>
-              <span style={{ fontSize: 16 }}>{icon}</span>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 11, color: C.bone }}>{label}</div>
-              </div>
-              <div style={{ fontSize: 12, color: C.champagne, fontWeight: 700 }}>+{points}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Recent points log */}
-      {pointsLog.length > 0 && (
-        <div style={{ background: "#0a0a0a", border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
-          <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 16, color: C.champagne, marginBottom: 12 }}>Recent Activity</div>
-          {pointsLog.slice(-8).reverse().map((entry, i) => {
-            const action = POINT_ACTIONS[entry.action];
-            const expiry = new Date(entry.earnedAt);
-            expiry.setDate(expiry.getDate() + POINT_EXPIRY_DAYS);
-            const daysLeft = Math.ceil((expiry - Date.now()) / 86400000);
-            return (
-              <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: i < pointsLog.length-1 ? `1px solid ${C.border}` : "none" }}>
-                <span style={{ fontSize: 16 }}>{action?.icon}</span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 12, color: C.bone }}>{action?.label}</div>
-                  <div style={{ fontSize: 10, color: C.dim }}>Expires in {Math.max(0, daysLeft)} days</div>
+            {FAST_MONEY.map((q,i) => {
+              const answer = member.fastMoney?.[q.id];
+              return (
+                <div key={q.id} style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:10, padding:14, marginBottom:10 }}>
+                  <div style={{ fontSize:12, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:8 }}>Q{i+1} · {q.question}</div>
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+                    {[["A",q.optA],["B",q.optB]].map(([side,label]) => {
+                      const sel = answer===side;
+                      return <div key={side} onClick={()=>setFastMoney(q.id,side)} style={{ padding:"10px 12px", borderRadius:8, border:`2px solid ${sel?C.champagne:C.border2}`, background:sel?C.champagneDim:"#111", cursor:"pointer", textAlign:"center" }}>
+                        <div style={{ fontSize:13, color:sel?C.champagne:C.bone, fontWeight:sel?700:400, lineHeight:1.3 }}>{label}</div>
+                      </div>;
+                    })}
+                  </div>
                 </div>
-                <div style={{ fontSize: 13, color: C.champagne, fontWeight: 700 }}>+{action?.points}</div>
+              );
+            })}
+            {Object.keys(member.fastMoney||{}).length===FAST_MONEY.length && (
+              <div style={{ background:`${C.champagne}11`, border:`1px solid ${C.champagne}44`, borderRadius:10, padding:14, textAlign:"center" }}>
+                <div style={{ fontSize:22, marginBottom:6 }}>🏁</div>
+                <div style={{ fontSize:13, color:C.champagne, fontWeight:600 }}>Fast Money complete!</div>
+                <div style={{ fontSize:11, color:C.dim, marginTop:4 }}>Your picks are now on your public profile.</div>
               </div>
-            );
-          })}
-        </div>
-      )}
+            )}
+          </>
+        )}
+
+        {/* POINTS TAB */}
+        {tab==="points" && (
+          <>
+            <div style={{ background:"#0a0a0a", border:`1px solid ${tier.color}44`, borderRadius:12, padding:16, marginBottom:14 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                <div>
+                  <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:18, color:tier.color }}>{tier.icon} {tier.name}</div>
+                  <div style={{ fontSize:11, color:C.dim, marginTop:2 }}>{nextTier?`${(nextTier.min-member.points).toLocaleString()} points to ${nextTier.name}`:"Maximum tier achieved"}</div>
+                </div>
+                <div style={{ textAlign:"right" }}>
+                  <div style={{ fontSize:26, fontFamily:"'Cormorant Garamond', serif", color:C.champagne, fontWeight:600 }}>{member.points.toLocaleString()}</div>
+                  <div style={{ fontSize:10, color:C.dim }}>total points</div>
+                </div>
+              </div>
+              <div style={{ height:4, background:"#1e1e1e", borderRadius:2, marginBottom:14 }}>
+                <div style={{ height:"100%", width:`${progress}%`, background:`linear-gradient(90deg, ${tier.color}, ${C.champagneLight})`, borderRadius:2 }} />
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:6 }}>
+                {TIERS.map(t=><div key={t.name} style={{ textAlign:"center", opacity:member.points>=t.min?1:0.3 }}>
+                  <div style={{ fontSize:18 }}>{t.icon}</div>
+                  <div style={{ fontSize:9, color:t.color, textTransform:"uppercase", letterSpacing:"0.05em" }}>{t.name}</div>
+                  <div style={{ fontSize:9, color:C.dim }}>{t.min===0?"0":t.min.toLocaleString()}</div>
+                </div>)}
+              </div>
+              <div style={{ marginTop:12, padding:10, background:"#111", borderRadius:8, fontSize:11, color:C.dim, lineHeight:1.6 }}>
+                ⏱ Points expire after <span style={{ color:C.champagne }}>90 days</span> — generous enough for an overseas trip.
+              </div>
+            </div>
+            <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
+              <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne, marginBottom:12 }}>How to Earn</div>
+              {Object.entries(POINT_ACTIONS).map(([key,{points,label,icon}])=>(
+                <div key={key} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 0", borderBottom:`1px solid ${C.border}` }}>
+                  <span style={{ fontSize:16, width:24 }}>{icon}</span>
+                  <div style={{ flex:1, fontSize:12, color:C.bone }}>{label}</div>
+                  <div style={{ fontSize:13, color:C.champagne, fontWeight:700 }}>+{points}</div>
+                </div>
+              ))}
+            </div>
+            {pointsLog.length>0 && (
+              <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16 }}>
+                <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne, marginBottom:12 }}>Recent Activity</div>
+                {pointsLog.slice(-10).reverse().map((entry,i)=>{
+                  const action=POINT_ACTIONS[entry.action];
+                  const expiry=new Date(entry.earnedAt); expiry.setDate(expiry.getDate()+POINT_EXPIRY_DAYS);
+                  const daysLeft=Math.ceil((expiry-Date.now())/86400000);
+                  return <div key={i} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 0", borderBottom:i<pointsLog.length-1?`1px solid ${C.border}`:"none" }}>
+                    <span style={{ fontSize:16 }}>{action?.icon}</span>
+                    <div style={{ flex:1 }}><div style={{ fontSize:12, color:C.bone }}>{action?.label}</div><div style={{ fontSize:10, color:C.dim }}>Expires in {Math.max(0,daysLeft)} days</div></div>
+                    <div style={{ fontSize:13, color:C.champagne, fontWeight:700 }}>+{action?.points}</div>
+                  </div>;
+                })}
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 };
@@ -950,13 +1062,13 @@ const App = () => {
         </div>
       </header>
 
-      {/* Map — only on roads screen */}
-      {screen === "roads" && (
+      {/* Map — only on roads list view */}
+      {screen === "roads" && !showRoadDetail && (
         <MapView roads={roads} selected={selected} onSelect={r => { setSelected(r); setShowRoadDetail(true); }} trips={trips} currentUser={currentUser} />
       )}
 
-      {/* Filter bar — roads screen */}
-      {screen === "roads" && (
+      {/* Filter bar — roads list only */}
+      {screen === "roads" && !showRoadDetail && (
         <div style={{ padding:"10px 16px", borderBottom:`1px solid ${C.border}`, display:"flex", gap:8, alignItems:"center", flexShrink:0, flexWrap:"wrap" }}>
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search roads..." style={{ flex:1, minWidth:120, background:"#111", border:`1px solid ${C.border}`, borderRadius:6, padding:"6px 11px", color:C.bone, fontSize:12, outline:"none" }} />
           {states.map(s => (
@@ -967,43 +1079,64 @@ const App = () => {
       )}
 
       {/* Content area */}
-      <div style={{ flex:1, overflow:"hidden", display:"flex" }}>
+      <div style={{ flex:1, overflow:"hidden", display:"flex", position:"relative" }}>
 
-        {/* Roads list */}
-        {screen === "roads" && (
-          <div style={{ width:260, borderRight:`1px solid ${C.border}`, overflowY:"auto", flexShrink:0 }}>
+        {/* ROADS LIST — full width on mobile */}
+        {screen === "roads" && !showRoadDetail && (
+          <div style={{ flex:1, overflowY:"auto" }}>
+            {filteredRoads.length === 0 && (
+              <div style={{ padding:40, textAlign:"center", color:C.dim }}>
+                <div style={{ fontSize:32, marginBottom:10 }}>🛣</div>
+                <div>No roads match your search</div>
+              </div>
+            )}
             {filteredRoads.map(r => (
-              <div key={r.id} onClick={() => { setSelected(r); setShowRoadDetail(true); }} style={{ padding:"13px 16px", borderBottom:`1px solid #151515`, cursor:"pointer", background:selected?.id===r.id?"#C9A84C08":"transparent", borderLeft:`3px solid ${selected?.id===r.id?C.champagne:"transparent"}` }}>
-                <div style={{ display:"flex", justifyContent:"space-between", gap:6 }}>
-                  <div style={{ flex:1 }}>
-                    <div style={{ fontSize:13, fontFamily:"'Cormorant Garamond', serif", fontWeight:600, color:selected?.id===r.id?C.champagne:C.bone, lineHeight:1.2, marginBottom:2 }}>{r.name}</div>
-                    <div style={{ fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>{r.region} · {r.state}</div>
+              <div key={r.id} onClick={() => { setSelected(r); setShowRoadDetail(true); }}
+                style={{ padding:"14px 16px", borderBottom:`1px solid #151515`, cursor:"pointer", display:"flex", gap:12, alignItems:"flex-start" }}>
+                {/* Coloured state pill */}
+                <div style={{ flexShrink:0, marginTop:3 }}>
+                  <div style={{ width:8, height:8, borderRadius:"50%", background: r.alerts?.length ? C.red : r.featured ? C.champagne : C.dim }} />
+                </div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:15, fontFamily:"'Cormorant Garamond', serif", fontWeight:600, color:C.bone, lineHeight:1.2, marginBottom:2 }}>{r.name}</div>
+                      <div style={{ fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:6 }}>{r.region} · {r.state}</div>
+                    </div>
+                    {r.alerts?.length > 0 && <span style={{ color:C.red, fontSize:14, flexShrink:0 }}>⚠</span>}
                   </div>
-                  {r.alerts?.length > 0 && <span style={{ color:C.red, fontSize:13 }}>⚠</span>}
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                      <StarRating value={avgRating(r)} size={12} />
+                      <span style={{ fontSize:11, color:C.dim }}>{avgRating(r).toFixed(1)} · {r.reviews} reviews</span>
+                    </div>
+                    <span style={{ fontSize:11, color:"#444" }}>{r.distance}</span>
+                  </div>
+                  <div style={{ display:"flex", gap:4, marginTop:7, flexWrap:"wrap" }}>
+                    {r.tags.slice(0,3).map(t => <span key={t} style={{ fontSize:9, padding:"2px 8px", background:"#1a1a1a", borderRadius:20, color:C.dim, textTransform:"uppercase", letterSpacing:"0.06em", border:`1px solid ${C.border}` }}>{t}</span>)}
+                  </div>
                 </div>
-                <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:7 }}>
-                  <StarRating value={avgRating(r)} size={11} />
-                  <span style={{ fontSize:10, color:C.dim }}>{avgRating(r).toFixed(1)} · {r.reviews} reviews</span>
-                </div>
-                <div style={{ display:"flex", gap:4, marginTop:7, flexWrap:"wrap" }}>
-                  {r.tags.slice(0,2).map(t => <span key={t} style={{ fontSize:9, padding:"2px 7px", background:"#1a1a1a", borderRadius:20, color:C.dim, textTransform:"uppercase", letterSpacing:"0.06em" }}>{t}</span>)}
-                  <span style={{ marginLeft:"auto", fontSize:10, color:"#444" }}>{r.distance}</span>
-                </div>
+                {/* Chevron */}
+                <div style={{ flexShrink:0, color:C.dim, fontSize:16, alignSelf:"center" }}>›</div>
               </div>
             ))}
           </div>
         )}
 
-        {/* Road detail panel */}
+        {/* ROAD DETAIL — full screen slide-in */}
         {screen === "roads" && showRoadDetail && selected && (
-          <div style={{ flex:1, overflowY:"auto" }}>
+          <div style={{ position:"absolute", inset:0, background:C.midnight, overflowY:"auto", zIndex:20, display:"flex", flexDirection:"column" }}>
+            {/* Back bar */}
+            <div style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 16px", borderBottom:`1px solid ${C.border}`, flexShrink:0, background:C.midnight, position:"sticky", top:0, zIndex:10 }}>
+              <button onClick={() => setShowRoadDetail(false)}
+                style={{ display:"flex", alignItems:"center", gap:6, background:"none", border:"none", cursor:"pointer", color:C.champagne, fontFamily:"'Josefin Sans', sans-serif", fontSize:12, textTransform:"uppercase", letterSpacing:"0.08em", padding:"4px 0" }}>
+                <span style={{ fontSize:20, lineHeight:1 }}>‹</span> Roads
+              </button>
+              <div style={{ flex:1 }} />
+              {selected.verified && <Badge color={C.blue}>✓ Verified</Badge>}
+              {selected.alerts?.length > 0 && <span style={{ color:C.red, fontSize:14 }}>⚠</span>}
+            </div>
             <RoadDetail road={selected} onClose={() => setShowRoadDetail(false)} currentUser={currentUser} onPointsEarned={earnPoints} />
-          </div>
-        )}
-        {screen === "roads" && !showRoadDetail && (
-          <div style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", color:C.dim, fontSize:13, flexDirection:"column", gap:10 }}>
-            <div style={{ fontSize:36 }}>🛣</div>
-            <div>Select a road to explore</div>
           </div>
         )}
 
@@ -1029,8 +1162,8 @@ const App = () => {
         )}
       </div>
 
-      {/* Bottom nav */}
-      <nav style={{ background:C.midnight, borderTop:`1px solid ${C.border}`, display:"flex", flexShrink:0 }}>
+      {/* Bottom nav — paddingBottom clears iPhone home indicator bar */}
+      <nav style={{ background:C.midnight, borderTop:`1px solid ${C.border}`, display:"flex", flexShrink:0, paddingBottom:"env(safe-area-inset-bottom)" }}>
         {[
           { id:"roads", icon:"🛣", label:"Roads" },
           { id:"trips", icon:"🏁", label:"Trips" },
