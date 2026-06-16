@@ -25,6 +25,22 @@ const C = {
   dim: '#555',
   faint: '#333',
 };
+// ─── API CONFIG ──────────────────────────────────────────────
+const API = "https://chasin-curves.emblen-scott.workers.dev";
+
+const api = {
+  getRoads: () => fetch(`${API}/roads`).then(r => r.json()),
+  postRoad: (road) => fetch(`${API}/roads`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(road) }).then(r => r.json()),
+  updateRoad: (id, updates) => fetch(`${API}/roads/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }).then(r => r.json()),
+  getMember: (id) => fetch(`${API}/member/${id}`).then(r => r.json()),
+  postMember: (member) => fetch(`${API}/member`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(member) }).then(r => r.json()),
+  updateMember: (id, updates) => fetch(`${API}/member/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }).then(r => r.json()),
+  getTrips: () => fetch(`${API}/trips`).then(r => r.json()),
+  postTrip: (trip) => fetch(`${API}/trips`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(trip) }).then(r => r.json()),
+  updateTrip: (id, updates) => fetch(`${API}/trips/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }).then(r => r.json()),
+  postReview: (review) => fetch(`${API}/reviews`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(review) }).then(r => r.json()),
+  postAlert: (alert) => fetch(`${API}/alerts`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(alert) }).then(r => r.json()),
+};
 
 // ─── SEED DATA ───────────────────────────────────────────────
 const SEED_ROADS = [
@@ -628,7 +644,7 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onPointsEarned }) =>
   const [showNew, setShowNew] = useState(false);
   const [form, setForm] = useState({ title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "" });
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     if (!form.title || form.selectedRoads.length === 0) return;
     const trip = {
       id: Date.now(), title: form.title, date: form.date, time: form.time,
@@ -636,7 +652,7 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onPointsEarned }) =>
       createdBy: currentUser.id, attendees: [{ memberId: currentUser.id, vehicleId: form.vehicleId }],
       createdAt: new Date().toISOString(),
     };
-    setTrips(prev => [...prev, trip]);
+    try { const res = await api.postTrip(trip); setTrips(prev => [...prev, res.trip || trip]); } catch { setTrips(prev => [...prev, trip]); }
     onPointsEarned("plan_trip");
     setForm({ title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "" });
     setShowNew(false);
@@ -649,7 +665,7 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onPointsEarned }) =>
     }));
   };
 
-  const joinTrip = (tripId) => {
+  const joinTrip = async (tripId) => {
     setTrips(prev => prev.map(t => t.id === tripId
       ? { ...t, attendees: [...(t.attendees||[]), { memberId: currentUser.id, vehicleId: currentUser.garage[0]?.id }] }
       : t
@@ -1156,31 +1172,80 @@ const AddRoadModal = ({ onClose, onAdd, onPointsEarned }) => {
 };
 
 // ─── MAIN APP ─────────────────────────────────────────────────
+// ─── MAIN APP ─────────────────────────────────────────────────
 const App = () => {
   const [roads, setRoads] = useState(SEED_ROADS);
-  const [members, setMembers] = useState(SEED_MEMBERS);
   const [trips, setTrips] = useState([]);
   const [pointsLog, setPointsLog] = useState([]);
   const [currentUser, setCurrentUser] = useState(SEED_MEMBERS[0]);
-  const [selected, setSelected] = useState(SEED_ROADS[0]);
-  const [screen, setScreen] = useState("roads"); // roads | garage | trips | profile
+  const [selected, setSelected] = useState(null);
+  const [screen, setScreen] = useState("roads");
   const [showAddRoad, setShowAddRoad] = useState(false);
   const [showRoadDetail, setShowRoadDetail] = useState(false);
   const [filterState, setFilterState] = useState("All");
   const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [apiError, setApiError] = useState(false);
 
-  const earnPoints = useCallback((action) => {
+  // ── Bootstrap — load from Worker on mount ──────────────────
+  useEffect(() => {
+    const init = async () => {
+      try {
+        // Load roads from KV — fall back to seed data if empty
+        const apiRoads = await api.getRoads();
+        if (Array.isArray(apiRoads) && apiRoads.length > 0) {
+          setRoads(apiRoads);
+          setSelected(apiRoads[0]);
+        } else {
+          // First run — seed the Worker with our initial roads
+          for (const road of SEED_ROADS) {
+            await api.postRoad(road);
+          }
+          setSelected(SEED_ROADS[0]);
+        }
+
+        // Load trips
+        const apiTrips = await api.getTrips();
+        if (Array.isArray(apiTrips)) setTrips(apiTrips);
+
+        // Load current user profile — create if doesn't exist
+        try {
+          const profile = await api.getMember("scott_cc");
+          if (profile && !profile.error) {
+            setCurrentUser({ ...SEED_MEMBERS[0], ...profile });
+          } else {
+            await api.postMember(SEED_MEMBERS[0]);
+          }
+        } catch {
+          await api.postMember(SEED_MEMBERS[0]);
+        }
+
+      } catch (err) {
+        console.error("API init failed — using seed data", err);
+        setApiError(true);
+        setSelected(SEED_ROADS[0]);
+      } finally {
+        setLoading(false);
+      }
+    };
+    init();
+  }, []);
+
+  // ── Earn points + sync to Worker ───────────────────────────
+  const earnPoints = useCallback(async (action) => {
     const cfg = POINT_ACTIONS[action];
     if (!cfg) return;
     const entry = { action, earnedAt: new Date().toISOString(), points: cfg.points };
     setPointsLog(prev => [...prev, entry]);
-    setCurrentUser(prev => ({ ...prev, points: prev.points + cfg.points }));
-    setMembers(prev => prev.map(m => m.id === currentUser.id ? { ...m, points: m.points + cfg.points } : m));
-  }, [currentUser.id]);
-
-  const updateCurrentUser = useCallback((updated) => {
+    const updated = { ...currentUser, points: (currentUser.points || 0) + cfg.points };
     setCurrentUser(updated);
-    setMembers(prev => prev.map(m => m.id === updated.id ? updated : m));
+    try { await api.updateMember(currentUser.id, { points: updated.points }); } catch {}
+  }, [currentUser]);
+
+  // ── Update user + sync to Worker ───────────────────────────
+  const updateCurrentUser = useCallback(async (updated) => {
+    setCurrentUser(updated);
+    try { await api.updateMember(updated.id, updated); } catch {}
   }, []);
 
   const states = ["All", ...Array.from(new Set(roads.map(r => r.state)))];
@@ -1189,6 +1254,24 @@ const App = () => {
     .filter(r => !search || r.name.toLowerCase().includes(search.toLowerCase()) || r.region.toLowerCase().includes(search.toLowerCase()));
 
   const tier = getTier(currentUser.points);
+
+
+  // Loading screen
+  if (loading) return (
+    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100dvh", background:C.midnight, gap:16 }}>
+      <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:32, fontWeight:700, color:C.champagne }}>
+        Chasin<span style={{ color:C.red }}>'</span> Curves
+      </div>
+      <div style={{ fontSize:10, color:"#444", letterSpacing:"0.18em", textTransform:"uppercase" }}>Roads, Rivers & Riffs</div>
+      <div style={{ marginTop:20, display:"flex", gap:6 }}>
+        {[0,1,2].map(i => (
+          <div key={i} style={{ width:8, height:8, borderRadius:"50%", background:C.champagne, opacity:0.3, animation:`pulse 1.2s ease-in-out ${i*0.2}s infinite` }} />
+        ))}
+      </div>
+      <style>{`@keyframes pulse { 0%,100%{opacity:0.3} 50%{opacity:1} }`}</style>
+      {apiError && <div style={{ fontSize:11, color:C.dim, marginTop:8 }}>Loading local data...</div>}
+    </div>
+  );
 
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100dvh", background:C.midnight, color:C.bone }}>
@@ -1336,7 +1419,7 @@ const App = () => {
       {showAddRoad && (
         <AddRoadModal
           onClose={() => setShowAddRoad(false)}
-          onAdd={r => { setRoads(prev => [...prev, r]); setSelected(r); setShowRoadDetail(true); }}
+          onAdd={async r => { try { const res = await api.postRoad(r); const saved = res.road || r; setRoads(prev => [...prev, saved]); setSelected(saved); setShowRoadDetail(true); } catch { setRoads(prev => [...prev, r]); setSelected(r); setShowRoadDetail(true); } }}
           onPointsEarned={earnPoints}
         />
       )}
