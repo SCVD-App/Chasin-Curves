@@ -1,0 +1,1061 @@
+// ============================================================
+// CHASIN' CURVES — app.js
+// Scott Claude Van Dam — v1.0
+// Features: Map, Roads, Members, Garage, Trips, Points
+// ============================================================
+
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ─── PALETTE ────────────────────────────────────────────────
+const C = {
+  midnight: '#0d0d0d',
+  panel: '#111',
+  border: '#1e1e1e',
+  border2: '#2a2a2a',
+  champagne: '#C9A84C',
+  champagneLight: '#e8c76a',
+  champagneDim: '#C9A84C22',
+  red: '#C0392B',
+  redDim: '#C0392B22',
+  blue: '#2E6DA4',
+  blueDim: '#2E6DA422',
+  bone: '#f5f3ee',
+  muted: '#888',
+  dim: '#555',
+  faint: '#333',
+};
+
+// ─── SEED DATA ───────────────────────────────────────────────
+const SEED_ROADS = [
+  {
+    id: 1, name: "Kenilworth–Maleny Road", region: "Sunshine Coast Hinterland", state: "QLD",
+    description: "Tight switchbacks through dairy country with sudden panoramas over the Glass House Mountains. One of the finest short drives in SE Queensland.",
+    distance: "28km", duration: "35 min",
+    startCoords: { lat: -26.5964, lng: 152.7398 }, endCoords: { lat: -26.7616, lng: 152.8638 },
+    tags: ["Hinterland", "Twisties", "Views"],
+    ratings: { driveability: 4.8, accessibility: 4.2, views: 4.9, surface: 4.0, thrill: 4.5 },
+    reviews: 24, busyTimes: ["Sat 10am–2pm", "Sun 9am–1pm", "Public holidays"], alerts: [],
+    fuel: ["Kenilworth township (start)", "Maleny Caltex (end)"],
+    food: ["Kenilworth Bakery", "Maleny Food Co.", "Terella Farm Café"],
+    meetups: ["Maleny Showgrounds", "Kenilworth Pub car park"],
+    featured: true, verified: true, addedBy: "scott_cc", addedDate: "2026-03-15",
+  },
+  {
+    id: 2, name: "Bruxner Highway — Gibraltar Range", region: "Northern NSW Ranges", state: "NSW",
+    description: "Long sweeping descents through World Heritage rainforest. Cold, misty, utterly empty. Watch for wildlife at dawn and dusk.",
+    distance: "186km", duration: "2h 30min",
+    startCoords: { lat: -29.0577, lng: 151.9898 }, endCoords: { lat: -29.6842, lng: 152.9337 },
+    tags: ["Highway", "Rainforest", "Long Haul"],
+    ratings: { driveability: 4.6, accessibility: 4.5, views: 4.7, surface: 3.8, thrill: 4.2 },
+    reviews: 41, busyTimes: ["Long weekends", "Easter week"],
+    alerts: [{ type: "roadworks", text: "Resurfacing km 34–48, expect 10 min delays" }],
+    fuel: ["Tenterfield", "Glen Innes", "Grafton"], food: ["Tenterfield Bakehouse", "Gibraltar Range NP picnic"],
+    meetups: ["Gibraltar Range rest area"], featured: false, verified: true,
+    addedBy: "scott_cc", addedDate: "2026-03-20",
+  },
+  {
+    id: 3, name: "Tasmanian Highland Lakes Road", region: "Central Highlands", state: "TAS",
+    description: "Desolate, otherworldly plateau driving through buttongrass moorland. Nothing else in Australia looks like this.",
+    distance: "112km", duration: "1h 45min",
+    startCoords: { lat: -41.9027, lng: 146.7197 }, endCoords: { lat: -41.5392, lng: 146.2308 },
+    tags: ["Highland", "Remote", "Scenic"],
+    ratings: { driveability: 4.1, accessibility: 3.2, views: 5.0, surface: 3.3, thrill: 4.6 },
+    reviews: 67, busyTimes: ["Dec–Feb peak", "Easter"],
+    alerts: [{ type: "seasonal", text: "Snow possible Jun–Sep. Check TasRoads before departure." }],
+    fuel: ["Bothwell (south)", "Deloraine (north) — NO FUEL ON ROAD"],
+    food: ["Bothwell General Store", "Pack your own"], meetups: ["Arthurs Lake dam wall"],
+    featured: true, verified: true, addedBy: "scott_cc", addedDate: "2026-04-01",
+  },
+  {
+    id: 4, name: "Old Pacific Highway — Peats Ridge to Calga", region: "Central Coast / Hawkesbury", state: "NSW",
+    description: "The spiritual home of Sydney Sunday drivers. Ridge-top runs, valley views. Weekdays it's all yours.",
+    distance: "52km", duration: "55 min",
+    startCoords: { lat: -33.3094, lng: 151.1842 }, endCoords: { lat: -33.4729, lng: 151.2433 },
+    tags: ["Classic", "Weekend Run", "Bikes Welcome"],
+    ratings: { driveability: 4.9, accessibility: 4.7, views: 4.3, surface: 4.2, thrill: 4.8 },
+    reviews: 189, busyTimes: ["Sat & Sun 8am–12pm", "School holidays"],
+    alerts: [], fuel: ["Calga servo", "Peats Ridge BP"],
+    food: ["Pie in the Sky (Calga)", "Peats Ridge General Store"], meetups: ["Pie in the Sky car park"],
+    featured: true, verified: true, addedBy: "scott_cc", addedDate: "2026-04-10",
+  },
+];
+
+const SEED_MEMBERS = [
+  {
+    id: "scott_cc", username: "scott_cc", displayName: "Scott", location: "Mount Mellum, QLD",
+    bio: "25 years on the rail network. Now chasing curves instead of coal trains. Roads, rivers & riffs.",
+    avatar: null, joinDate: "2026-03-01",
+    points: 1240, pointsExpiry: [], tier: "Pioneer",
+    garage: [
+      { id: "v1", make: "BMW", model: "Z4", year: 2005, variant: "E85 3.0i Roadster", colour: "Imola Red", notes: "My daily curve-chaser. Just had the steering rack done.", avatar: null, primary: true },
+      { id: "v2", make: "Jaguar", model: "XJ8", year: 2004, variant: "X350 3.5L V8", colour: "Champagne", notes: "The long-legged grand tourer. Air suspension rebuild underway.", avatar: null, primary: false },
+      { id: "v3", make: "Triumph", model: "Thunderbird", year: 2013, variant: "1600cc", colour: "Midnight Black", notes: "Two wheels when the road demands it.", avatar: null, primary: false },
+    ],
+    roadsAdded: [1, 2, 3, 4], reviewsWritten: 8, tripsPlanned: 3,
+  },
+];
+
+// ─── POINT SYSTEM CONFIG ─────────────────────────────────────
+const POINT_ACTIONS = {
+  add_road: { points: 100, label: "Road Added", icon: "🛣" },
+  write_review: { points: 30, label: "Review Written", icon: "✍️" },
+  rate_road: { points: 10, label: "Road Rated", icon: "⭐" },
+  plan_trip: { points: 20, label: "Trip Planned", icon: "📍" },
+  upload_photo: { points: 15, label: "Photo Uploaded", icon: "📸" },
+  add_vehicle: { points: 50, label: "Vehicle Added", icon: "🚗" },
+  report_alert: { points: 25, label: "Alert Reported", icon: "⚠️" },
+  daily_login: { points: 5, label: "Daily Login", icon: "🔑" },
+};
+
+const TIERS = [
+  { name: "Explorer", min: 0, max: 199, color: C.muted, icon: "🗺" },
+  { name: "Rover", min: 200, max: 499, color: C.blue, icon: "🚗" },
+  { name: "Chaser", min: 500, max: 999, color: C.champagne, icon: "🏁" },
+  { name: "Pioneer", min: 1000, max: 1999, color: "#9b59b6", icon: "⚡" },
+  { name: "Legend", min: 2000, max: Infinity, color: C.red, icon: "👑" },
+];
+
+const POINT_EXPIRY_DAYS = 90;
+
+// ─── UTILITIES ───────────────────────────────────────────────
+const avgRating = r => {
+  const vals = Object.values(r.ratings);
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+};
+
+const getTier = pts => TIERS.find(t => pts >= t.min && pts <= t.max) || TIERS[0];
+
+const fmtDate = d => new Date(d).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+
+// ─── SHARED COMPONENTS ───────────────────────────────────────
+
+const Btn = ({ children, onClick, variant = "primary", size = "md", style: sx = {}, disabled }) => {
+  const base = {
+    border: "none", borderRadius: 8, cursor: disabled ? "not-allowed" : "pointer",
+    fontFamily: "'Josefin Sans', sans-serif", textTransform: "uppercase",
+    letterSpacing: "0.08em", fontWeight: 700, transition: "opacity 0.15s",
+    opacity: disabled ? 0.4 : 1,
+    padding: size === "sm" ? "5px 12px" : size === "lg" ? "12px 28px" : "8px 18px",
+    fontSize: size === "sm" ? 11 : size === "lg" ? 14 : 12,
+  };
+  const variants = {
+    primary: { background: `linear-gradient(135deg, ${C.champagne}, ${C.champagneLight})`, color: C.midnight },
+    ghost: { background: "none", border: `1px solid ${C.border2}`, color: C.muted },
+    danger: { background: "none", border: `1px solid ${C.red}`, color: C.red },
+    blue: { background: C.blueDim, border: `1px solid ${C.blue}`, color: C.blue },
+  };
+  return <button onClick={disabled ? undefined : onClick} style={{ ...base, ...variants[variant], ...sx }}>{children}</button>;
+};
+
+const Input = ({ label, value, onChange, placeholder, type = "text", multiline, rows = 3, style: sx = {} }) => {
+  const inputStyle = {
+    width: "100%", background: "#0f0f0f", border: `1px solid ${C.border}`,
+    borderRadius: 6, padding: "8px 12px", color: C.bone, fontSize: 13,
+    fontFamily: "'Josefin Sans', sans-serif", outline: "none",
+  };
+  return (
+    <div style={{ marginBottom: 14 }}>
+      {label && <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>{label}</div>}
+      {multiline
+        ? <textarea value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} rows={rows} style={{ ...inputStyle, resize: "vertical", ...sx }} />
+        : <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} style={{ ...inputStyle, ...sx }} />
+      }
+    </div>
+  );
+};
+
+const StarRating = ({ value, size = 13 }) => {
+  const full = Math.floor(value), partial = value % 1;
+  return (
+    <span style={{ display: "inline-flex", gap: 1 }}>
+      {Array.from({ length: 5 }).map((_, i) => (
+        <span key={i} style={{ position: "relative", width: size, height: size, display: "inline-block" }}>
+          <svg viewBox="0 0 20 20" width={size} height={size} style={{ position: "absolute" }}>
+            <polygon points="10,1 12.9,7 19.5,7.6 14.5,12 16.2,18.5 10,15 3.8,18.5 5.5,12 0.5,7.6 7.1,7" fill="#1a1a1a" />
+          </svg>
+          <svg viewBox="0 0 20 20" width={size} height={size} style={{ position: "absolute", clipPath: i < full ? "inset(0)" : i === full ? `inset(0 ${100 - partial * 100}% 0 0)` : "inset(0 100% 0 0)" }}>
+            <polygon points="10,1 12.9,7 19.5,7.6 14.5,12 16.2,18.5 10,15 3.8,18.5 5.5,12 0.5,7.6 7.1,7" fill={C.champagne} />
+          </svg>
+        </span>
+      ))}
+    </span>
+  );
+};
+
+const RatingBar = ({ label, value }) => (
+  <div style={{ marginBottom: 8 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+      <span style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>{label}</span>
+      <span style={{ fontSize: 12, color: C.champagne, fontWeight: 600 }}>{value.toFixed(1)}</span>
+    </div>
+    <div style={{ height: 3, background: "#1e1e1e", borderRadius: 2 }}>
+      <div style={{ height: "100%", width: `${(value / 5) * 100}%`, background: `linear-gradient(90deg, ${C.champagne}, ${C.champagneLight})`, borderRadius: 2 }} />
+    </div>
+  </div>
+);
+
+const Badge = ({ children, color = C.champagne }) => (
+  <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 20, background: `${color}22`, color, textTransform: "uppercase", letterSpacing: "0.1em", border: `1px solid ${color}40` }}>
+    {children}
+  </span>
+);
+
+const Modal = ({ title, subtitle, onClose, children, wide }) => (
+  <div style={{ position: "fixed", inset: 0, background: "#000c", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+    <div style={{ background: C.midnight, border: `1px solid ${C.border}`, borderRadius: 12, width: "100%", maxWidth: wide ? 700 : 520, maxHeight: "88vh", overflowY: "auto", padding: 28 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22 }}>
+        <div>
+          <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, color: C.champagne, fontWeight: 600 }}>{title}</div>
+          {subtitle && <div style={{ fontSize: 12, color: C.dim, marginTop: 3 }}>{subtitle}</div>}
+        </div>
+        <button onClick={onClose} style={{ background: "none", border: "none", color: C.dim, fontSize: 20, cursor: "pointer", lineHeight: 1 }}>✕</button>
+      </div>
+      {children}
+    </div>
+  </div>
+);
+
+const VehicleAvatar = ({ vehicle, size = 44, selected, onClick }) => {
+  const initials = `${vehicle.make[0]}${vehicle.model[0]}`;
+  const colours = { "Imola Red": C.red, "Champagne": C.champagne, "Midnight Black": "#444", default: C.blue };
+  const bg = colours[vehicle.colour] || colours.default;
+  return (
+    <div onClick={onClick} title={`${vehicle.year} ${vehicle.make} ${vehicle.model}`}
+      style={{
+        width: size, height: size, borderRadius: "50%", background: vehicle.avatar ? "none" : `${bg}33`,
+        border: `2px solid ${selected ? C.champagne : bg}`, display: "flex", alignItems: "center",
+        justifyContent: "center", cursor: onClick ? "pointer" : "default", flexShrink: 0,
+        boxShadow: selected ? `0 0 12px ${C.champagne}66` : "none", transition: "all 0.2s",
+        overflow: "hidden", position: "relative",
+      }}>
+      {vehicle.avatar
+        ? <img src={vehicle.avatar} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        : <span style={{ fontSize: size * 0.3, color: bg, fontWeight: 700 }}>{initials}</span>
+      }
+      {vehicle.primary && size >= 40 && (
+        <div style={{ position: "absolute", bottom: 0, right: 0, width: 14, height: 14, background: C.champagne, borderRadius: "50%", border: `2px solid ${C.midnight}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 7 }}>★</div>
+      )}
+    </div>
+  );
+};
+
+const PointsBadge = ({ pts, style: sx }) => {
+  const tier = getTier(pts);
+  return (
+    <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", background: `${tier.color}18`, border: `1px solid ${tier.color}44`, borderRadius: 20, ...sx }}>
+      <span style={{ fontSize: 13 }}>{tier.icon}</span>
+      <span style={{ fontSize: 11, color: tier.color, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>{tier.name}</span>
+      <span style={{ fontSize: 11, color: C.muted }}>· {pts.toLocaleString()} pts</span>
+    </div>
+  );
+};
+
+// ─── MAP COMPONENT ───────────────────────────────────────────
+const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
+  // Simplified schematic map — real app would use Mapbox/Google Maps
+  const toX = lng => Math.max(3, Math.min(95, ((lng - 136) / 20) * 100));
+  const toY = lat => Math.max(3, Math.min(95, ((lat + 45) / 25) * 100));
+
+  return (
+    <div style={{ position: "relative", height: 220, background: "#0a0f14", borderBottom: `1px solid ${C.border}`, overflow: "hidden" }}>
+      {/* Topo lines */}
+      <svg style={{ position: "absolute", inset: 0, opacity: 0.05 }} viewBox="0 0 800 220" preserveAspectRatio="none">
+        <path d="M0,110 Q100,60 200,100 Q300,140 400,80 Q500,30 600,90 Q700,140 800,70" stroke={C.champagne} strokeWidth="1" fill="none"/>
+        <path d="M0,130 Q150,70 300,120 Q450,170 600,100 Q700,60 800,110" stroke={C.champagne} strokeWidth="1" fill="none"/>
+        <path d="M0,150 Q200,90 350,140 Q500,190 650,120 Q750,80 800,130" stroke={C.champagne} strokeWidth="0.8" fill="none"/>
+        <path d="M0,80 Q180,30 360,70 Q540,110 720,50 Q780,30 800,60" stroke={C.blue} strokeWidth="0.7" fill="none" opacity="0.7"/>
+      </svg>
+      {[...Array(10)].map((_,i) => <div key={i} style={{ position:"absolute", left:`${(i+1)*9}%`, top:0, bottom:0, borderLeft:`1px solid #ffffff06` }}/>)}
+      {[...Array(6)].map((_,i) => <div key={i} style={{ position:"absolute", top:`${(i+1)*14}%`, left:0, right:0, borderTop:`1px solid #ffffff06` }}/>)}
+
+      <div style={{ position: "absolute", top: 10, left: 14, fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: "0.16em" }}>Eastern Australia</div>
+
+      {/* Road pins */}
+      {roads.map(r => {
+        const x = toX(r.startCoords.lng), y = toY(r.startCoords.lat);
+        const isSelected = selected?.id === r.id;
+        return (
+          <div key={r.id} onClick={() => onSelect(r)} style={{ position: "absolute", left: `${x}%`, top: `${y}%`, transform: "translate(-50%,-100%)", cursor: "pointer", zIndex: isSelected ? 10 : 5, transition: "all 0.2s" }}>
+            <div style={{ width: isSelected ? 16 : 11, height: isSelected ? 16 : 11, background: r.alerts?.length ? C.red : isSelected ? C.champagne : `${C.champagne}77`, border: `2px solid ${isSelected ? "#fff" : C.champagne}`, borderRadius: "50% 50% 50% 0", transform: "rotate(-45deg)", boxShadow: isSelected ? `0 0 12px ${C.champagne}88` : "none", transition: "all 0.2s" }} />
+          </div>
+        );
+      })}
+
+      {/* Trip pins */}
+      {trips.map(t => t.routes.map(rid => {
+        const road = roads.find(r => r.id === rid);
+        if (!road) return null;
+        const x = toX(road.startCoords.lng), y = toY(road.startCoords.lat);
+        const member = SEED_MEMBERS.find(m => m.id === t.createdBy);
+        const vehicle = member?.garage.find(v => v.id === t.vehicleId);
+        return (
+          <div key={`${t.id}-${rid}`} style={{ position: "absolute", left: `${x + 2}%`, top: `${y - 2}%`, transform: "translate(-50%,-50%)", zIndex: 8 }}>
+            {vehicle && <VehicleAvatar vehicle={vehicle} size={24} />}
+          </div>
+        );
+      }))}
+
+      {/* State labels */}
+      <div style={{ position: "absolute", bottom: 8, right: 14, display: "flex", gap: 10 }}>
+        {[["QLD",C.champagne],["NSW",C.blue],["TAS","#888"],["VIC","#666"]].map(([s,c]) => (
+          <span key={s} style={{ fontSize: 9, color: c, letterSpacing: "0.12em", textTransform: "uppercase" }}>{s}</span>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ─── ROAD DETAIL ─────────────────────────────────────────────
+const RoadDetail = ({ road, onClose, currentUser, onPointsEarned }) => {
+  const [tab, setTab] = useState("overview");
+  const tabs = [["overview","Overview"],["ratings","Ratings"],["logistics","Logistics"],["alerts",`Alerts${road.alerts.length ? ` (${road.alerts.length})` : ""}`]];
+
+  const handleReview = () => {
+    onPointsEarned("write_review");
+    alert("Review submitted! +30 points");
+  };
+
+  return (
+    <div>
+      {/* Header */}
+      <div style={{ padding: "18px 20px 14px", borderBottom: `1px solid ${C.border}` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
+              {road.featured && <Badge color={C.champagne}>Featured</Badge>}
+              {road.verified && <Badge color={C.blue}>✓ Verified</Badge>}
+              <Badge color={C.dim}>{road.state}</Badge>
+            </div>
+            <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, fontWeight: 700, color: C.bone, lineHeight: 1.1 }}>{road.name}</h3>
+            <div style={{ fontSize: 11, color: C.dim, marginTop: 3, textTransform: "uppercase", letterSpacing: "0.1em" }}>{road.region}</div>
+          </div>
+          <div style={{ textAlign: "right", flexShrink: 0 }}>
+            <div style={{ fontSize: 20, fontFamily: "'Cormorant Garamond', serif", color: C.champagne, fontWeight: 600 }}>{avgRating(road).toFixed(1)}</div>
+            <StarRating value={avgRating(road)} />
+            <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>{road.reviews} reviews</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 20, marginTop: 12 }}>
+          {[["Distance", road.distance],["Drive Time", road.duration],["Thrill", road.ratings.thrill.toFixed(1) + " ★"]].map(([k,v]) => (
+            <div key={k}>
+              <div style={{ fontSize: 13, color: C.bone, fontWeight: 600 }}>{v}</div>
+              <div style={{ fontSize: 10, color: C.dim, textTransform: "uppercase", letterSpacing: "0.1em" }}>{k}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display: "flex", borderBottom: `1px solid ${C.border}`, padding: "0 20px" }}>
+        {tabs.map(([id,label]) => (
+          <button key={id} onClick={() => setTab(id)} style={{ padding: "9px 14px", background: "none", border: "none", borderBottom: `2px solid ${tab===id ? C.champagne : "transparent"}`, color: tab===id ? C.champagne : C.dim, fontFamily: "'Josefin Sans', sans-serif", fontSize: 11, cursor: "pointer", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab content */}
+      <div style={{ padding: "16px 20px" }}>
+        {tab === "overview" && (
+          <>
+            <p style={{ color: "#aaa", fontSize: 13, lineHeight: 1.7, marginBottom: 14 }}>{road.description}</p>
+            <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 14 }}>
+              {road.tags.map(t => <span key={t} style={{ fontSize: 10, padding: "3px 10px", background: "#1a1a1a", borderRadius: 20, color: C.muted, border: `1px solid ${C.border}`, textTransform: "uppercase", letterSpacing: "0.08em" }}>{t}</span>)}
+            </div>
+            <div style={{ background: "#0a0a0a", borderRadius: 8, padding: 12, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 10, color: C.champagne, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>GPS</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <div>
+                  <div style={{ fontSize: 9, color: C.dim, marginBottom: 2 }}>START</div>
+                  <div style={{ fontSize: 11, color: C.muted, fontFamily: "monospace" }}>{road.startCoords.lat.toFixed(4)}, {road.startCoords.lng.toFixed(4)}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 9, color: C.dim, marginBottom: 2 }}>END</div>
+                  <div style={{ fontSize: 11, color: C.muted, fontFamily: "monospace" }}>{road.endCoords.lat.toFixed(4)}, {road.endCoords.lng.toFixed(4)}</div>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {tab === "ratings" && (
+          <>
+            <div style={{ marginBottom: 20 }}>
+              {[["driveability","Driveability"],["accessibility","Accessibility"],["views","Views / Scenery"],["surface","Surface Quality"],["thrill","Thrill Factor"]].map(([k,l]) => (
+                <RatingBar key={k} label={l} value={road.ratings[k]} />
+              ))}
+            </div>
+            <div style={{ textAlign: "center", padding: 14, background: "#0a0a0a", borderRadius: 8, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Driven this road? Rate it and earn 30 points.</div>
+              <Btn onClick={handleReview}>Write a Review</Btn>
+            </div>
+          </>
+        )}
+
+        {tab === "logistics" && (
+          <>
+            {[
+              { label: "⏱ Busy Times to Avoid", color: C.red, items: road.busyTimes },
+              { label: "⛽ Fuel", color: C.champagne, items: road.fuel },
+              { label: "🍴 Food & Coffee", color: C.champagne, items: road.food },
+              { label: "📍 Group Meetup / Parking", color: C.blue, items: road.meetups },
+            ].map(({ label, color, items }) => (
+              <div key={label} style={{ background: "#0a0a0a", borderRadius: 8, padding: 12, border: `1px solid ${C.border}`, marginBottom: 10 }}>
+                <div style={{ fontSize: 10, color, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>{label}</div>
+                {items.map((item, i) => (
+                  <div key={i} style={{ fontSize: 12, color: "#aaa", padding: "4px 0", borderBottom: i < items.length-1 ? `1px solid ${C.border}` : "none" }}>• {item}</div>
+                ))}
+              </div>
+            ))}
+          </>
+        )}
+
+        {tab === "alerts" && (
+          <>
+            {road.alerts.length === 0
+              ? <div style={{ textAlign: "center", padding: 32, color: C.dim }}><div style={{ fontSize: 28, marginBottom: 10 }}>✅</div>No active alerts</div>
+              : road.alerts.map((a, i) => {
+                  const clr = a.type === "roadworks" ? C.red : a.type === "seasonal" ? C.blue : C.champagne;
+                  return (
+                    <div key={i} style={{ padding: "10px 12px", background: `${clr}12`, border: `1px solid ${clr}40`, borderRadius: 8, marginBottom: 8 }}>
+                      <div style={{ fontSize: 11, color: clr, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>{a.type}</div>
+                      <div style={{ fontSize: 13, color: "#ccc" }}>{a.text}</div>
+                    </div>
+                  );
+                })
+            }
+            <div style={{ marginTop: 14, textAlign: "center" }}>
+              <Btn variant="danger" size="sm" onClick={() => { onPointsEarned("report_alert"); alert("Alert reported! +25 points"); }}>Report an Issue</Btn>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ─── GARAGE SECTION ──────────────────────────────────────────
+const GarageView = ({ member, onUpdate, onPointsEarned }) => {
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ make: "", model: "", year: "", variant: "", colour: "", notes: "" });
+  const fileRef = useRef();
+
+  const handleAdd = () => {
+    if (!form.make || !form.model) return;
+    const v = { id: `v${Date.now()}`, ...form, avatar: null, primary: member.garage.length === 0 };
+    onUpdate({ ...member, garage: [...member.garage, v] });
+    onPointsEarned("add_vehicle");
+    setForm({ make: "", model: "", year: "", variant: "", colour: "", notes: "" });
+    setShowAdd(false);
+  };
+
+  const setPrimary = id => {
+    onUpdate({ ...member, garage: member.garage.map(v => ({ ...v, primary: v.id === id })) });
+  };
+
+  const handleAvatarUpload = (vehicleId, e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      onUpdate({ ...member, garage: member.garage.map(v => v.id === vehicleId ? { ...v, avatar: ev.target.result } : v) });
+      onPointsEarned("upload_photo");
+    };
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <div style={{ padding: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+        <div>
+          <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, color: C.champagne }}>The Garage</div>
+          <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>Your fleet. Select your ride for the day.</div>
+        </div>
+        <Btn size="sm" onClick={() => setShowAdd(true)}>+ Add Vehicle</Btn>
+      </div>
+
+      {member.garage.length === 0 && (
+        <div style={{ textAlign: "center", padding: 40, color: C.dim }}>
+          <div style={{ fontSize: 32, marginBottom: 10 }}>🚗</div>
+          <div>No vehicles yet. Add your first ride.</div>
+        </div>
+      )}
+
+      {member.garage.map(v => (
+        <div key={v.id} style={{ background: "#0a0a0a", border: `1px solid ${v.primary ? C.champagne : C.border}`, borderRadius: 10, padding: 16, marginBottom: 12 }}>
+          <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+            {/* Avatar */}
+            <div style={{ position: "relative", flexShrink: 0 }}>
+              <VehicleAvatar vehicle={v} size={56} />
+              <label style={{ position: "absolute", bottom: -4, right: -4, width: 20, height: 20, background: C.champagne, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 10, border: `2px solid ${C.midnight}` }}>
+                📷
+                <input type="file" accept="image/*" onChange={e => handleAvatarUpload(v.id, e)} style={{ display: "none" }} />
+              </label>
+            </div>
+
+            {/* Details */}
+            <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 17, fontWeight: 600, color: C.bone }}>
+                  {v.year} {v.make} {v.model}
+                </div>
+                {v.primary && <Badge color={C.champagne}>★ Primary</Badge>}
+              </div>
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>{v.variant} · {v.colour}</div>
+              {v.notes && <div style={{ fontSize: 12, color: C.dim, lineHeight: 1.5 }}>{v.notes}</div>}
+            </div>
+
+            {/* Actions */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+              {!v.primary && <Btn size="sm" variant="ghost" onClick={() => setPrimary(v.id)}>Set Primary</Btn>}
+            </div>
+          </div>
+        </div>
+      ))}
+
+      {showAdd && (
+        <Modal title="Add Vehicle" subtitle="50 points on your first upload" onClose={() => setShowAdd(false)}>
+          <Input label="Make *" value={form.make} onChange={v => setForm(f => ({...f, make: v}))} placeholder="BMW" />
+          <Input label="Model *" value={form.model} onChange={v => setForm(f => ({...f, model: v}))} placeholder="Z4" />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Input label="Year" value={form.year} onChange={v => setForm(f => ({...f, year: v}))} placeholder="2005" />
+            <Input label="Colour" value={form.colour} onChange={v => setForm(f => ({...f, colour: v}))} placeholder="Imola Red" />
+          </div>
+          <Input label="Variant / Spec" value={form.variant} onChange={v => setForm(f => ({...f, variant: v}))} placeholder="E85 3.0i Roadster" />
+          <Input label="Notes" value={form.notes} onChange={v => setForm(f => ({...f, notes: v}))} placeholder="Any notes about this vehicle..." multiline />
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <Btn variant="ghost" onClick={() => setShowAdd(false)} style={{ flex: 1 }}>Cancel</Btn>
+            <Btn onClick={handleAdd} style={{ flex: 2 }}>Add to Garage</Btn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+};
+
+// ─── TRIP PLANNER ─────────────────────────────────────────────
+const TripPlanner = ({ roads, trips, setTrips, currentUser, onPointsEarned }) => {
+  const [showNew, setShowNew] = useState(false);
+  const [form, setForm] = useState({ title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "" });
+
+  const handleCreate = () => {
+    if (!form.title || form.selectedRoads.length === 0) return;
+    const trip = {
+      id: Date.now(), title: form.title, date: form.date, time: form.time,
+      routes: form.selectedRoads, vehicleId: form.vehicleId, notes: form.notes,
+      createdBy: currentUser.id, attendees: [{ memberId: currentUser.id, vehicleId: form.vehicleId }],
+      createdAt: new Date().toISOString(),
+    };
+    setTrips(prev => [...prev, trip]);
+    onPointsEarned("plan_trip");
+    setForm({ title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "" });
+    setShowNew(false);
+  };
+
+  const toggleRoad = id => {
+    setForm(f => ({
+      ...f,
+      selectedRoads: f.selectedRoads.includes(id) ? f.selectedRoads.filter(r => r !== id) : [...f.selectedRoads, id]
+    }));
+  };
+
+  const joinTrip = (tripId) => {
+    setTrips(prev => prev.map(t => t.id === tripId
+      ? { ...t, attendees: [...(t.attendees||[]), { memberId: currentUser.id, vehicleId: currentUser.garage[0]?.id }] }
+      : t
+    ));
+  };
+
+  return (
+    <div style={{ padding: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+        <div>
+          <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, color: C.champagne }}>Trips & Runs</div>
+          <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>See who's heading out. Join the convoy.</div>
+        </div>
+        <Btn size="sm" onClick={() => setShowNew(true)}>+ Plan a Run</Btn>
+      </div>
+
+      {trips.length === 0 && (
+        <div style={{ textAlign: "center", padding: 40, color: C.dim }}>
+          <div style={{ fontSize: 32, marginBottom: 10 }}>🏁</div>
+          <div>No runs planned yet. Be the first.</div>
+        </div>
+      )}
+
+      {trips.map(trip => {
+        const organiser = SEED_MEMBERS.find(m => m.id === trip.createdBy);
+        const vehicle = organiser?.garage.find(v => v.id === trip.vehicleId);
+        const tripRoads = roads.filter(r => trip.routes.includes(r.id));
+        const isJoined = trip.attendees?.some(a => a.memberId === currentUser.id);
+
+        return (
+          <div key={trip.id} style={{ background: "#0a0a0a", border: `1px solid ${C.border}`, borderRadius: 10, padding: 16, marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+              <div>
+                <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 17, fontWeight: 600, color: C.bone, marginBottom: 2 }}>{trip.title}</div>
+                <div style={{ fontSize: 11, color: C.dim }}>{trip.date && `${fmtDate(trip.date)}`}{trip.time && ` · ${trip.time}`}</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {vehicle && <VehicleAvatar vehicle={vehicle} size={36} />}
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 11, color: C.muted }}>{organiser?.displayName}</div>
+                  <div style={{ fontSize: 10, color: C.dim }}>{trip.attendees?.length || 1} going</div>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+              {tripRoads.map(r => (
+                <span key={r.id} style={{ fontSize: 11, padding: "3px 10px", background: C.champagneDim, borderRadius: 20, color: C.champagne, border: `1px solid ${C.champagne}33` }}>{r.name}</span>
+              ))}
+            </div>
+
+            {/* Attendee avatars */}
+            {trip.attendees?.length > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: -6, marginBottom: 10 }}>
+                {trip.attendees.map((a, i) => {
+                  const m = SEED_MEMBERS.find(x => x.id === a.memberId);
+                  const v = m?.garage.find(x => x.id === a.vehicleId) || m?.garage[0];
+                  return v ? <div key={i} style={{ marginLeft: i > 0 ? -8 : 0 }}><VehicleAvatar vehicle={v} size={28} /></div> : null;
+                })}
+                <span style={{ marginLeft: 10, fontSize: 11, color: C.dim }}>{trip.attendees.length} vehicle{trip.attendees.length !== 1 ? "s" : ""} joining</span>
+              </div>
+            )}
+
+            {trip.notes && <div style={{ fontSize: 12, color: C.dim, marginBottom: 10, fontStyle: "italic" }}>{trip.notes}</div>}
+
+            {!isJoined && trip.createdBy !== currentUser.id && (
+              <Btn size="sm" variant="blue" onClick={() => joinTrip(trip.id)}>Join this Run</Btn>
+            )}
+            {isJoined && <Badge color={C.blue}>✓ You're in</Badge>}
+          </div>
+        );
+      })}
+
+      {showNew && (
+        <Modal title="Plan a Run" subtitle="Share your route with the community · +20 pts" onClose={() => setShowNew(false)}>
+          <Input label="Run Name *" value={form.title} onChange={v => setForm(f=>({...f,title:v}))} placeholder="Sunday morning hinterland loop" />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Input label="Date" value={form.date} onChange={v => setForm(f=>({...f,date:v}))} type="date" />
+            <Input label="Departure Time" value={form.time} onChange={v => setForm(f=>({...f,time:v}))} placeholder="07:30" />
+          </div>
+
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Select Roads *</div>
+            {roads.map(r => (
+              <div key={r.id} onClick={() => toggleRoad(r.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}>
+                <div style={{ width: 18, height: 18, borderRadius: 4, border: `2px solid ${form.selectedRoads.includes(r.id) ? C.champagne : C.border2}`, background: form.selectedRoads.includes(r.id) ? C.champagneDim : "none", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: C.champagne, flexShrink: 0 }}>
+                  {form.selectedRoads.includes(r.id) ? "✓" : ""}
+                </div>
+                <div>
+                  <div style={{ fontSize: 13, color: C.bone }}>{r.name}</div>
+                  <div style={{ fontSize: 10, color: C.dim }}>{r.region} · {r.distance}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Your Vehicle</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {currentUser.garage.map(v => (
+                <div key={v.id} onClick={() => setForm(f=>({...f,vehicleId:v.id}))} style={{ cursor: "pointer" }}>
+                  <VehicleAvatar vehicle={v} size={44} selected={form.vehicleId === v.id} />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <Input label="Notes" value={form.notes} onChange={v => setForm(f=>({...f,notes:v}))} placeholder="Meeting point, pace notes, anything else..." multiline />
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <Btn variant="ghost" onClick={() => setShowNew(false)} style={{ flex: 1 }}>Cancel</Btn>
+            <Btn onClick={handleCreate} style={{ flex: 2 }}>Publish Run</Btn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+};
+
+// ─── POINTS & PROFILE ─────────────────────────────────────────
+const ProfileView = ({ member, onUpdate, pointsLog }) => {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({ displayName: member.displayName, location: member.location, bio: member.bio });
+  const tier = getTier(member.points);
+  const nextTier = TIERS.find(t => t.min > member.points);
+  const progress = nextTier ? ((member.points - tier.min) / (nextTier.min - tier.min)) * 100 : 100;
+  const fileRef = useRef();
+
+  const handleSave = () => {
+    onUpdate({ ...member, ...form });
+    setEditing(false);
+  };
+
+  const handleAvatarUpload = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => onUpdate({ ...member, avatar: ev.target.result });
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <div style={{ padding: 20 }}>
+      {/* Profile card */}
+      <div style={{ background: "#0a0a0a", border: `1px solid ${C.border}`, borderRadius: 12, padding: 20, marginBottom: 20 }}>
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+          {/* Avatar */}
+          <div style={{ position: "relative", flexShrink: 0 }}>
+            <div style={{ width: 72, height: 72, borderRadius: "50%", background: C.champagneDim, border: `2px solid ${C.champagne}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+              {member.avatar
+                ? <img src={member.avatar} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                : <span style={{ fontSize: 28, color: C.champagne, fontFamily: "'Cormorant Garamond', serif" }}>{member.displayName[0]}</span>
+              }
+            </div>
+            <label style={{ position: "absolute", bottom: -2, right: -2, width: 22, height: 22, background: C.champagne, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 11, border: `2px solid ${C.midnight}` }}>
+              📷<input type="file" accept="image/*" onChange={handleAvatarUpload} style={{ display: "none" }} ref={fileRef} />
+            </label>
+          </div>
+
+          {/* Info */}
+          <div style={{ flex: 1 }}>
+            {editing ? (
+              <>
+                <Input label="Display Name" value={form.displayName} onChange={v => setForm(f=>({...f,displayName:v}))} />
+                <Input label="Location" value={form.location} onChange={v => setForm(f=>({...f,location:v}))} />
+                <Input label="Bio" value={form.bio} onChange={v => setForm(f=>({...f,bio:v}))} multiline rows={2} />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Btn size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Btn>
+                  <Btn size="sm" onClick={handleSave}>Save</Btn>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                  <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, fontWeight: 600, color: C.bone }}>{member.displayName}</div>
+                  <Btn size="sm" variant="ghost" onClick={() => setEditing(true)}>Edit</Btn>
+                </div>
+                <div style={{ fontSize: 11, color: C.dim, marginBottom: 6 }}>📍 {member.location}</div>
+                <div style={{ fontSize: 12, color: "#aaa", lineHeight: 1.5, marginBottom: 10 }}>{member.bio}</div>
+                <PointsBadge pts={member.points} />
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Points & Tier */}
+      <div style={{ background: "#0a0a0a", border: `1px solid ${tier.color}44`, borderRadius: 12, padding: 18, marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div>
+            <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 18, color: tier.color }}>{tier.icon} {tier.name}</div>
+            <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>
+              {nextTier ? `${nextTier.min - member.points} points to ${nextTier.name}` : "Maximum tier achieved"}
+            </div>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 26, fontFamily: "'Cormorant Garamond', serif", color: C.champagne, fontWeight: 600 }}>{member.points.toLocaleString()}</div>
+            <div style={{ fontSize: 10, color: C.dim }}>total points</div>
+          </div>
+        </div>
+
+        {/* Progress bar */}
+        <div style={{ height: 4, background: "#1e1e1e", borderRadius: 2, marginBottom: 12 }}>
+          <div style={{ height: "100%", width: `${progress}%`, background: `linear-gradient(90deg, ${tier.color}, ${C.champagneLight})`, borderRadius: 2, transition: "width 0.6s ease" }} />
+        </div>
+
+        {/* Tier list */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
+          {TIERS.map(t => (
+            <div key={t.name} style={{ textAlign: "center", opacity: member.points >= t.min ? 1 : 0.3 }}>
+              <div style={{ fontSize: 18 }}>{t.icon}</div>
+              <div style={{ fontSize: 9, color: t.color, textTransform: "uppercase", letterSpacing: "0.05em" }}>{t.name}</div>
+              <div style={{ fontSize: 9, color: C.dim }}>{t.min === 0 ? "0" : t.min.toLocaleString()}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ marginTop: 14, padding: 10, background: "#111", borderRadius: 8, fontSize: 11, color: C.dim, lineHeight: 1.6 }}>
+          ⏱ Points expire after <span style={{ color: C.champagne }}>90 days</span> of inactivity — plenty of buffer for an overseas trip. Keep Chasing Curves to maintain your tier.
+        </div>
+      </div>
+
+      {/* Points how-to */}
+      <div style={{ background: "#0a0a0a", border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
+        <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 16, color: C.champagne, marginBottom: 12 }}>How to Earn Points</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          {Object.entries(POINT_ACTIONS).map(([key, { points, label, icon }]) => (
+            <div key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: `1px solid ${C.border}` }}>
+              <span style={{ fontSize: 16 }}>{icon}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 11, color: C.bone }}>{label}</div>
+              </div>
+              <div style={{ fontSize: 12, color: C.champagne, fontWeight: 700 }}>+{points}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Recent points log */}
+      {pointsLog.length > 0 && (
+        <div style={{ background: "#0a0a0a", border: `1px solid ${C.border}`, borderRadius: 12, padding: 16 }}>
+          <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 16, color: C.champagne, marginBottom: 12 }}>Recent Activity</div>
+          {pointsLog.slice(-8).reverse().map((entry, i) => {
+            const action = POINT_ACTIONS[entry.action];
+            const expiry = new Date(entry.earnedAt);
+            expiry.setDate(expiry.getDate() + POINT_EXPIRY_DAYS);
+            const daysLeft = Math.ceil((expiry - Date.now()) / 86400000);
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: i < pointsLog.length-1 ? `1px solid ${C.border}` : "none" }}>
+                <span style={{ fontSize: 16 }}>{action?.icon}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12, color: C.bone }}>{action?.label}</div>
+                  <div style={{ fontSize: 10, color: C.dim }}>Expires in {Math.max(0, daysLeft)} days</div>
+                </div>
+                <div style={{ fontSize: 13, color: C.champagne, fontWeight: 700 }}>+{action?.points}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─── ADD ROAD FORM ───────────────────────────────────────────
+const AddRoadModal = ({ onClose, onAdd, onPointsEarned }) => {
+  const [form, setForm] = useState({ name:"", region:"", state:"QLD", description:"", distance:"", duration:"", tags:"", startLat:"", startLng:"", endLat:"", endLng:"", busyTimes:"", fuel:"", food:"", meetups:"" });
+  const [ratings, setRatings] = useState({ driveability:3, accessibility:3, views:3, surface:3, thrill:3 });
+  const set = (k,v) => setForm(f=>({...f,[k]:v}));
+
+  const handleSubmit = () => {
+    if (!form.name || !form.region) return;
+    onAdd({
+      id: Date.now(), ...form,
+      startCoords: { lat: parseFloat(form.startLat)||0, lng: parseFloat(form.startLng)||0 },
+      endCoords: { lat: parseFloat(form.endLat)||0, lng: parseFloat(form.endLng)||0 },
+      tags: form.tags.split(",").map(t=>t.trim()).filter(Boolean),
+      busyTimes: form.busyTimes.split("\n").filter(Boolean),
+      fuel: form.fuel.split("\n").filter(Boolean),
+      food: form.food.split("\n").filter(Boolean),
+      meetups: form.meetups.split("\n").filter(Boolean),
+      ratings, reviews: 0, alerts: [], featured: false, verified: false,
+      addedBy: "scott_cc", addedDate: new Date().toISOString().slice(0,10),
+    });
+    onPointsEarned("add_road");
+    onClose();
+  };
+
+  return (
+    <Modal title="Add a Road" subtitle="Share a road worth chasing · +100 points" onClose={onClose} wide>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+        <div style={{ gridColumn: "1/-1" }}><Input label="Road Name *" value={form.name} onChange={v=>set("name",v)} placeholder="e.g. Kenilworth–Maleny Road" /></div>
+        <Input label="Region *" value={form.region} onChange={v=>set("region",v)} placeholder="Sunshine Coast Hinterland" />
+        <div>
+          <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>State</div>
+          <select value={form.state} onChange={e=>set("state",e.target.value)} style={{ width:"100%", background:"#0f0f0f", border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 12px", color:C.bone, fontSize:13, marginBottom:14 }}>
+            {["QLD","NSW","VIC","TAS","SA","WA","NT","ACT"].map(s=><option key={s}>{s}</option>)}
+          </select>
+        </div>
+        <div style={{ gridColumn:"1/-1" }}><Input label="Description" value={form.description} onChange={v=>set("description",v)} placeholder="What makes this road worth chasing?" multiline /></div>
+        <Input label="Distance" value={form.distance} onChange={v=>set("distance",v)} placeholder="28km" />
+        <Input label="Drive Time" value={form.duration} onChange={v=>set("duration",v)} placeholder="35 min" />
+        <Input label="Start Lat" value={form.startLat} onChange={v=>set("startLat",v)} placeholder="-26.596" />
+        <Input label="Start Lng" value={form.startLng} onChange={v=>set("startLng",v)} placeholder="152.739" />
+        <Input label="End Lat" value={form.endLat} onChange={v=>set("endLat",v)} placeholder="-26.761" />
+        <Input label="End Lng" value={form.endLng} onChange={v=>set("endLng",v)} placeholder="152.863" />
+        <div style={{ gridColumn:"1/-1" }}><Input label="Tags (comma separated)" value={form.tags} onChange={v=>set("tags",v)} placeholder="Twisties, Views, Remote" /></div>
+        <div style={{ gridColumn:"1/-1" }}><Input label="Busy Times to Avoid (one per line)" value={form.busyTimes} onChange={v=>set("busyTimes",v)} multiline rows={2} placeholder="Sat 10am–2pm&#10;Public holidays" /></div>
+        <Input label="Fuel (one per line)" value={form.fuel} onChange={v=>set("fuel",v)} multiline rows={2} placeholder="Town BP (start)&#10;Servo 50km in" />
+        <Input label="Food & Coffee (one per line)" value={form.food} onChange={v=>set("food",v)} multiline rows={2} placeholder="Local bakery&#10;Roadhouse" />
+        <div style={{ gridColumn:"1/-1" }}><Input label="Meetup / Parking Spots (one per line)" value={form.meetups} onChange={v=>set("meetups",v)} multiline rows={2} placeholder="Town hall car park&#10;Rest area at summit" /></div>
+      </div>
+
+      <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:16, marginTop:4 }}>
+        <div style={{ fontSize:12, color:C.champagne, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:14 }}>Your Ratings</div>
+        {[["driveability","Driveability"],["accessibility","Accessibility"],["views","Views / Scenery"],["surface","Surface Quality"],["thrill","Thrill Factor"]].map(([k,l]) => (
+          <div key={k} style={{ marginBottom:12 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+              <span style={{ fontSize:11, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em" }}>{l}</span>
+              <span style={{ fontSize:12, color:C.champagne }}>{ratings[k].toFixed(1)}</span>
+            </div>
+            <input type="range" min={1} max={5} step={0.5} value={ratings[k]} onChange={e=>setRatings(r=>({...r,[k]:parseFloat(e.target.value)}))} style={{ width:"100%" }} />
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display:"flex", gap:10, marginTop:20 }}>
+        <Btn variant="ghost" onClick={onClose} style={{ flex:1 }}>Cancel</Btn>
+        <Btn onClick={handleSubmit} style={{ flex:2 }}>Submit Road</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+// ─── MAIN APP ─────────────────────────────────────────────────
+const App = () => {
+  const [roads, setRoads] = useState(SEED_ROADS);
+  const [members, setMembers] = useState(SEED_MEMBERS);
+  const [trips, setTrips] = useState([]);
+  const [pointsLog, setPointsLog] = useState([]);
+  const [currentUser, setCurrentUser] = useState(SEED_MEMBERS[0]);
+  const [selected, setSelected] = useState(SEED_ROADS[0]);
+  const [screen, setScreen] = useState("roads"); // roads | garage | trips | profile
+  const [showAddRoad, setShowAddRoad] = useState(false);
+  const [showRoadDetail, setShowRoadDetail] = useState(false);
+  const [filterState, setFilterState] = useState("All");
+  const [search, setSearch] = useState("");
+
+  const earnPoints = useCallback((action) => {
+    const cfg = POINT_ACTIONS[action];
+    if (!cfg) return;
+    const entry = { action, earnedAt: new Date().toISOString(), points: cfg.points };
+    setPointsLog(prev => [...prev, entry]);
+    setCurrentUser(prev => ({ ...prev, points: prev.points + cfg.points }));
+    setMembers(prev => prev.map(m => m.id === currentUser.id ? { ...m, points: m.points + cfg.points } : m));
+  }, [currentUser.id]);
+
+  const updateCurrentUser = useCallback((updated) => {
+    setCurrentUser(updated);
+    setMembers(prev => prev.map(m => m.id === updated.id ? updated : m));
+  }, []);
+
+  const states = ["All", ...Array.from(new Set(roads.map(r => r.state)))];
+  const filteredRoads = roads
+    .filter(r => filterState === "All" || r.state === filterState)
+    .filter(r => !search || r.name.toLowerCase().includes(search.toLowerCase()) || r.region.toLowerCase().includes(search.toLowerCase()));
+
+  const tier = getTier(currentUser.points);
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100vh", background:C.midnight, color:C.bone }}>
+
+      {/* Header */}
+      <header style={{ background:C.midnight, borderBottom:`1px solid ${C.border}`, padding:"13px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0, zIndex:50 }}>
+        <div>
+          <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:22, fontWeight:700, color:C.champagne, lineHeight:1 }}>
+            Chasin<span style={{ color:C.red }}>'</span> Curves
+          </div>
+          <div style={{ fontSize:9, color:"#444", letterSpacing:"0.18em", textTransform:"uppercase", marginTop:2 }}>Roads, Rivers & Riffs</div>
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <PointsBadge pts={currentUser.points} />
+          <div onClick={() => setScreen("profile")} style={{ width:36, height:36, borderRadius:"50%", background:C.champagneDim, border:`2px solid ${C.champagne}`, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", overflow:"hidden" }}>
+            {currentUser.avatar
+              ? <img src={currentUser.avatar} style={{ width:"100%", height:"100%", objectFit:"cover" }} />
+              : <span style={{ fontSize:14, color:C.champagne, fontFamily:"'Cormorant Garamond', serif" }}>{currentUser.displayName[0]}</span>
+            }
+          </div>
+        </div>
+      </header>
+
+      {/* Map — only on roads screen */}
+      {screen === "roads" && (
+        <MapView roads={roads} selected={selected} onSelect={r => { setSelected(r); setShowRoadDetail(true); }} trips={trips} currentUser={currentUser} />
+      )}
+
+      {/* Filter bar — roads screen */}
+      {screen === "roads" && (
+        <div style={{ padding:"10px 16px", borderBottom:`1px solid ${C.border}`, display:"flex", gap:8, alignItems:"center", flexShrink:0, flexWrap:"wrap" }}>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search roads..." style={{ flex:1, minWidth:120, background:"#111", border:`1px solid ${C.border}`, borderRadius:6, padding:"6px 11px", color:C.bone, fontSize:12, outline:"none" }} />
+          {states.map(s => (
+            <button key={s} onClick={()=>setFilterState(s)} style={{ padding:"5px 10px", borderRadius:6, border:"1px solid", borderColor:filterState===s?C.champagne:C.border2, background:filterState===s?C.champagneDim:"none", color:filterState===s?C.champagne:C.dim, fontSize:10, cursor:"pointer", textTransform:"uppercase", letterSpacing:"0.08em" }}>{s}</button>
+          ))}
+          <Btn size="sm" onClick={() => setShowAddRoad(true)}>+ Add</Btn>
+        </div>
+      )}
+
+      {/* Content area */}
+      <div style={{ flex:1, overflow:"hidden", display:"flex" }}>
+
+        {/* Roads list */}
+        {screen === "roads" && (
+          <div style={{ width:260, borderRight:`1px solid ${C.border}`, overflowY:"auto", flexShrink:0 }}>
+            {filteredRoads.map(r => (
+              <div key={r.id} onClick={() => { setSelected(r); setShowRoadDetail(true); }} style={{ padding:"13px 16px", borderBottom:`1px solid #151515`, cursor:"pointer", background:selected?.id===r.id?"#C9A84C08":"transparent", borderLeft:`3px solid ${selected?.id===r.id?C.champagne:"transparent"}` }}>
+                <div style={{ display:"flex", justifyContent:"space-between", gap:6 }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:13, fontFamily:"'Cormorant Garamond', serif", fontWeight:600, color:selected?.id===r.id?C.champagne:C.bone, lineHeight:1.2, marginBottom:2 }}>{r.name}</div>
+                    <div style={{ fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>{r.region} · {r.state}</div>
+                  </div>
+                  {r.alerts?.length > 0 && <span style={{ color:C.red, fontSize:13 }}>⚠</span>}
+                </div>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:7 }}>
+                  <StarRating value={avgRating(r)} size={11} />
+                  <span style={{ fontSize:10, color:C.dim }}>{avgRating(r).toFixed(1)} · {r.reviews} reviews</span>
+                </div>
+                <div style={{ display:"flex", gap:4, marginTop:7, flexWrap:"wrap" }}>
+                  {r.tags.slice(0,2).map(t => <span key={t} style={{ fontSize:9, padding:"2px 7px", background:"#1a1a1a", borderRadius:20, color:C.dim, textTransform:"uppercase", letterSpacing:"0.06em" }}>{t}</span>)}
+                  <span style={{ marginLeft:"auto", fontSize:10, color:"#444" }}>{r.distance}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Road detail panel */}
+        {screen === "roads" && showRoadDetail && selected && (
+          <div style={{ flex:1, overflowY:"auto" }}>
+            <RoadDetail road={selected} onClose={() => setShowRoadDetail(false)} currentUser={currentUser} onPointsEarned={earnPoints} />
+          </div>
+        )}
+        {screen === "roads" && !showRoadDetail && (
+          <div style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", color:C.dim, fontSize:13, flexDirection:"column", gap:10 }}>
+            <div style={{ fontSize:36 }}>🛣</div>
+            <div>Select a road to explore</div>
+          </div>
+        )}
+
+        {/* Garage */}
+        {screen === "garage" && (
+          <div style={{ flex:1, overflowY:"auto" }}>
+            <GarageView member={currentUser} onUpdate={updateCurrentUser} onPointsEarned={earnPoints} />
+          </div>
+        )}
+
+        {/* Trips */}
+        {screen === "trips" && (
+          <div style={{ flex:1, overflowY:"auto" }}>
+            <TripPlanner roads={roads} trips={trips} setTrips={setTrips} currentUser={currentUser} onPointsEarned={earnPoints} />
+          </div>
+        )}
+
+        {/* Profile */}
+        {screen === "profile" && (
+          <div style={{ flex:1, overflowY:"auto" }}>
+            <ProfileView member={currentUser} onUpdate={updateCurrentUser} pointsLog={pointsLog} />
+          </div>
+        )}
+      </div>
+
+      {/* Bottom nav */}
+      <nav style={{ background:C.midnight, borderTop:`1px solid ${C.border}`, display:"flex", flexShrink:0 }}>
+        {[
+          { id:"roads", icon:"🛣", label:"Roads" },
+          { id:"trips", icon:"🏁", label:"Trips" },
+          { id:"garage", icon:"🚗", label:"Garage" },
+          { id:"profile", icon:"👤", label:"Profile" },
+        ].map(({ id, icon, label }) => (
+          <button key={id} onClick={() => setScreen(id)} style={{ flex:1, padding:"10px 0 8px", background:"none", border:"none", cursor:"pointer", color:screen===id?C.champagne:C.dim, display:"flex", flexDirection:"column", alignItems:"center", gap:3 }}>
+            <span style={{ fontSize:20 }}>{icon}</span>
+            <span style={{ fontSize:10, textTransform:"uppercase", letterSpacing:"0.08em", fontFamily:"'Josefin Sans', sans-serif" }}>{label}</span>
+            {screen===id && <div style={{ width:20, height:2, background:C.champagne, borderRadius:1 }} />}
+          </button>
+        ))}
+      </nav>
+
+      {/* Modals */}
+      {showAddRoad && (
+        <AddRoadModal
+          onClose={() => setShowAddRoad(false)}
+          onAdd={r => { setRoads(prev => [...prev, r]); setSelected(r); setShowRoadDetail(true); }}
+          onPointsEarned={earnPoints}
+        />
+      )}
+    </div>
+  );
+};
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
