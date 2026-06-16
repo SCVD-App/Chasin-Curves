@@ -81,6 +81,95 @@ const SEED_ROADS = [
   },
 ];
 
+// ─── PIT PASS CONFIG ─────────────────────────────────────────
+const PIT_PASS_DAYS = 7;
+const PIT_PASS_REQUIREMENTS = [
+  { id: "avatar",   label: "Profile photo uploaded",        check: m => !!m.avatar },
+  { id: "bio",      label: "Bio completed",                 check: m => m.bio?.length > 10 },
+  { id: "location", label: "Location added",                check: m => m.location?.length > 2 },
+  { id: "fastmoney",label: "At least one Fast Money answer",check: m => Object.keys(m.fastMoney||{}).length >= 1 },
+  { id: "vehicle",  label: "Vehicle added to garage",       check: m => m.garage?.length >= 1 },
+  { id: "vphoto",   label: "Vehicle photo uploaded",        check: m => m.garage?.some(v => !!v.avatar) },
+];
+
+const checkPitPass = member => PIT_PASS_REQUIREMENTS.every(r => r.check(member));
+const pitPassProgress = member => PIT_PASS_REQUIREMENTS.filter(r => r.check(member)).length;
+
+const PitPassBanner = ({ member, onDismiss }) => {
+  const completed = checkPitPass(member);
+  const progress = pitPassProgress(member);
+  const total = PIT_PASS_REQUIREMENTS.length;
+  const pct = Math.round((progress / total) * 100);
+
+  // Already activated — show countdown
+  if (member.pitPassActivated) {
+    const expiry = new Date(member.pitPassActivated);
+    expiry.setDate(expiry.getDate() + PIT_PASS_DAYS);
+    const daysLeft = Math.ceil((expiry - Date.now()) / 86400000);
+    if (daysLeft <= 0) return null;
+    return (
+      <div style={{ margin:"0 0 0 0", padding:"10px 16px", background:`linear-gradient(135deg, ${C.champagne}22, ${C.champagne}08)`, borderBottom:`1px solid ${C.champagne}44`, display:"flex", alignItems:"center", gap:10 }}>
+        <span style={{ fontSize:20 }}>🎟</span>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:12, color:C.champagne, fontWeight:700 }}>Pit Pass Active — {daysLeft} day{daysLeft!==1?"s":""} remaining</div>
+          <div style={{ fontSize:10, color:C.dim, marginTop:1 }}>Full Pro access. Upgrade before it expires to keep everything.</div>
+        </div>
+      </div>
+    );
+  }
+
+  // Completed but not yet activated
+  if (completed && !member.pitPassActivated) {
+    return (
+      <div style={{ margin:"0 0 0 0", padding:"12px 16px", background:`linear-gradient(135deg, ${C.champagne}33, ${C.champagne}11)`, borderBottom:`1px solid ${C.champagne}66`, display:"flex", alignItems:"center", gap:10 }}>
+        <span style={{ fontSize:24 }}>🎟</span>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:13, color:C.champagne, fontWeight:700 }}>Pit Pass Unlocked!</div>
+          <div style={{ fontSize:11, color:"#ccc", marginTop:2 }}>Complete your profile for 7 days of full Pro access — free.</div>
+        </div>
+        <button onClick={onDismiss} style={{ background:`linear-gradient(135deg, ${C.champagne}, ${C.champagneLight})`, border:"none", borderRadius:8, padding:"8px 14px", color:C.midnight, fontFamily:"'Josefin Sans', sans-serif", fontSize:11, fontWeight:700, cursor:"pointer", textTransform:"uppercase", letterSpacing:"0.08em", flexShrink:0 }}>
+          Activate
+        </button>
+      </div>
+    );
+  }
+
+  // In progress — show on profile screen only (return null here, rendered in profile)
+  return null;
+};
+
+const PitPassProgress = ({ member }) => {
+  const progress = pitPassProgress(member);
+  const total = PIT_PASS_REQUIREMENTS.length;
+  const pct = Math.round((progress / total) * 100);
+  if (checkPitPass(member) || member.pitPassActivated) return null;
+  return (
+    <div style={{ background:`${C.champagne}0a`, border:`1px solid ${C.champagne}33`, borderRadius:12, padding:16, marginBottom:14 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+        <div>
+          <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne }}>🎟 Pit Pass — {PIT_PASS_DAYS} Days Free Pro</div>
+          <div style={{ fontSize:11, color:C.dim, marginTop:2 }}>Complete your profile to unlock full access</div>
+        </div>
+        <div style={{ fontSize:13, color:C.champagne, fontWeight:700 }}>{progress}/{total}</div>
+      </div>
+      <div style={{ height:4, background:"#1e1e1e", borderRadius:2, marginBottom:12 }}>
+        <div style={{ height:"100%", width:`${pct}%`, background:`linear-gradient(90deg, ${C.champagne}, ${C.champagneLight})`, borderRadius:2, transition:"width 0.4s ease" }} />
+      </div>
+      {PIT_PASS_REQUIREMENTS.map(req => {
+        const done = req.check(member);
+        return (
+          <div key={req.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
+            <div style={{ width:18, height:18, borderRadius:"50%", background:done?C.champagne:"#1a1a1a", border:`2px solid ${done?C.champagne:C.border2}`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+              {done && <span style={{ fontSize:10, color:C.midnight }}>✓</span>}
+            </div>
+            <div style={{ fontSize:12, color:done?C.bone:C.dim, textDecoration:done?"none":"none" }}>{req.label}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 const SEED_MEMBERS = [
   {
     id: "scott_cc", username: "scott_cc", displayName: "Scott", location: "Mount Mellum, QLD",
@@ -694,16 +783,39 @@ const SKILLS_LIST = [
 ];
 
 const FAST_MONEY = [
-  { id:"q1",  question:"Holden or Ford?",              optA:"Holden 🦁",        optB:"Ford 🐎" },
-  { id:"q2",  question:"BMW or Mercedes?",             optA:"BMW 🔵",           optB:"Mercedes ⭐" },
-  { id:"q3",  question:"Harley or Triumph?",           optA:"Harley 🦅",        optB:"Triumph 🇬🇧" },
-  { id:"q4",  question:"Manual or Automatic?",         optA:"Manual 🕹",        optB:"Automatic 🤖" },
-  { id:"q5",  question:"Track day or Sunday cruise?",  optA:"Track Day 🏁",     optB:"Sunday Cruise ☕" },
-  { id:"q6",  question:"Ginger or Maryanne?",          optA:"Ginger 💃",        optB:"Maryanne 🌺" },
-  { id:"q7",  question:"Sofia Vergara or Rafael Nadal?",optA:"Sofia 🌹",        optB:"Rafa 🎾" },
-  { id:"q8",  question:"Dawn patrol or midnight run?", optA:"Dawn Patrol 🌅",   optB:"Midnight Run 🌙" },
-  { id:"q9",  question:"Original or Modified?",        optA:"Keep it Stock 🏛", optB:"Modify Everything 🔩" },
-  { id:"q10", question:"Roads or Tracks?",             optA:"Open Roads 🛣",    optB:"Race Tracks 🏎" },
+  // ── CARS ──
+  { id:"q1",  category:"Cars",   question:"Holden or Ford?",               optA:"Holden 🦁",              optB:"Ford 🐎" },
+  { id:"q2",  category:"Cars",   question:"BMW or Mercedes?",              optA:"BMW 🔵",                 optB:"Mercedes ⭐" },
+  { id:"q3",  category:"Cars",   question:"Harley or Triumph?",            optA:"Harley 🦅",              optB:"Triumph 🇬🇧" },
+  { id:"q4",  category:"Cars",   question:"Manual or Automatic?",          optA:"Manual 🕹",              optB:"Automatic 🤖" },
+  { id:"q5",  category:"Cars",   question:"Original or Modified?",         optA:"Keep it Stock 🏛",       optB:"Modify Everything 🔩" },
+  { id:"q6",  category:"Cars",   question:"Track day or Sunday cruise?",   optA:"Track Day 🏁",           optB:"Sunday Cruise ☕" },
+  { id:"q7",  category:"Cars",   question:"Dawn patrol or midnight run?",  optA:"Dawn Patrol 🌅",         optB:"Midnight Run 🌙" },
+  { id:"q8",  category:"Cars",   question:"Roads or Tracks?",              optA:"Open Roads 🛣",          optB:"Race Tracks 🏎" },
+  // ── SHED ──
+  { id:"q9",  category:"Shed",   question:"Pirelli or Michelin?",          optA:"Pirelli 🇮🇹",            optB:"Michelin 🇫🇷" },
+  { id:"q10", category:"Shed",   question:"NGK or Bosch?",                 optA:"NGK 🔥",                 optB:"Bosch ⚙️" },
+  { id:"q11", category:"Shed",   question:"OEM or Aftermarket?",           optA:"OEM All Day 🏭",         optB:"Aftermarket Forever 🛠" },
+  { id:"q12", category:"Shed",   question:"Fix it yourself or take it in?",optA:"DIY 🔧",                 optB:"Let the Pros handle it 🧑‍🔧" },
+  // ── MUSIC ──
+  { id:"q13", category:"Music",  question:"Strat or Les Paul?",            optA:"Stratocaster 🎸",        optB:"Les Paul 🎸" },
+  { id:"q14", category:"Music",  question:"SG or Telecaster?",             optA:"Gibson SG 🤘",           optB:"Telecaster 🤠" },
+  { id:"q15", category:"Music",  question:"Marshall or Vox?",              optA:"Marshall 🔊",            optB:"Vox ✅" },
+  { id:"q16", category:"Music",  question:"ZZ Top or Coldplay?",           optA:"ZZ Top 🧔🧔",            optB:"Coldplay ❌", warn:"Choosing Coldplay results in immediate lifetime ban. You have been warned." },
+  { id:"q17", category:"Music",  question:"Vinyl or Spotify?",             optA:"Vinyl 💿",               optB:"Spotify 🎧" },
+  { id:"q18", category:"Music",  question:"Live gig or studio album?",     optA:"Live — nothing else 🎤", optB:"Studio — the pure vision 🎵" },
+  // ── MOVIES ──
+  { id:"q19", category:"Movies", question:"Steve McQueen or Paul Newman?", optA:"McQueen 🏎",             optB:"Newman 🧊" },
+  { id:"q20", category:"Movies", question:"Bullitt or Le Mans?",           optA:"Bullitt 🚔",             optB:"Le Mans 🏁" },
+  { id:"q21", category:"Movies", question:"Mad Max or Fast & Furious?",    optA:"Mad Max 🔥",             optB:"Fast & Furious 🏙" },
+  { id:"q22", category:"Movies", question:"Top Gun or Days of Thunder?",   optA:"Top Gun ✈️",             optB:"Days of Thunder 🏎" },
+  // ── LIFE ──
+  { id:"q23", category:"Life",   question:"Ginger or Maryanne?",           optA:"Ginger 💃",              optB:"Maryanne 🌺" },
+  { id:"q24", category:"Life",   question:"Sofia Vergara or Rafael Nadal?",optA:"Sofia 🌹",               optB:"Rafa 🎾" },
+  { id:"q25", category:"Life",   question:"Sunrise or sunset?",            optA:"Sunrise 🌅",             optB:"Sunset 🌇" },
+  { id:"q26", category:"Life",   question:"Mountains or coast?",           optA:"Mountains ⛰",           optB:"Coast 🌊" },
+  { id:"q27", category:"Life",   question:"Coffee or beer?",               optA:"Coffee ☕",              optB:"Beer 🍺" },
+  { id:"q28", category:"Life",   question:"Early bird or night owl?",      optA:"Early Bird 🐦",          optB:"Night Owl 🦉" },
 ];
 
 const ProfileView = ({ member, onUpdate, pointsLog }) => {
@@ -797,6 +909,7 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
                 </>
               )}
             </div>
+            <PitPassProgress member={member} />
             <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16 }}>
               <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne, marginBottom:12 }}>Community Stats</div>
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
@@ -847,33 +960,70 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
           <>
             <div style={{ marginBottom:16 }}>
               <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:18, color:C.champagne, marginBottom:4 }}>Fast Money</div>
-              <div style={{ fontSize:12, color:C.dim, lineHeight:1.6 }}>Ten questions. No wrong answers. Just tap your pick — shows on your public profile so people know who they're dealing with before they say g'day.</div>
+              <div style={{ fontSize:12, color:C.dim, lineHeight:1.6 }}>Twenty-eight questions. No wrong answers. One exception — see Q16. Tap your pick — shows on your public profile so people know who they're dealing with before they say g'day.</div>
             </div>
-            {FAST_MONEY.map((q,i) => {
-              const answer = member.fastMoney?.[q.id];
+
+            {/* Category sections */}
+            {["Cars","Shed","Music","Movies","Life"].map(cat => {
+              const catQ = FAST_MONEY.filter(q => q.category === cat);
+              const catIcons = { Cars:"🚗", Shed:"🔧", Music:"🎸", Movies:"🎬", Life:"☀️" };
               return (
-                <div key={q.id} style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:10, padding:14, marginBottom:10 }}>
-                  <div style={{ fontSize:12, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:8 }}>Q{i+1} · {q.question}</div>
-                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-                    {[["A",q.optA],["B",q.optB]].map(([side,label]) => {
-                      const sel = answer===side;
-                      return <div key={side} onClick={()=>setFastMoney(q.id,side)} style={{ padding:"10px 12px", borderRadius:8, border:`2px solid ${sel?C.champagne:C.border2}`, background:sel?C.champagneDim:"#111", cursor:"pointer", textAlign:"center" }}>
-                        <div style={{ fontSize:13, color:sel?C.champagne:C.bone, fontWeight:sel?700:400, lineHeight:1.3 }}>{label}</div>
-                      </div>;
-                    })}
+                <div key={cat} style={{ marginBottom:20 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, paddingBottom:6, borderBottom:`1px solid ${C.border}` }}>
+                    <span style={{ fontSize:16 }}>{catIcons[cat]}</span>
+                    <span style={{ fontSize:11, color:C.champagne, textTransform:"uppercase", letterSpacing:"0.12em", fontWeight:700 }}>{cat}</span>
+                    <span style={{ fontSize:10, color:C.dim, marginLeft:"auto" }}>
+                      {catQ.filter(q => member.fastMoney?.[q.id]).length}/{catQ.length} answered
+                    </span>
                   </div>
+                  {catQ.map((q,i) => {
+                    const answer = member.fastMoney?.[q.id];
+                    const isColdplay = q.id === "q16" && answer === "B";
+                    return (
+                      <div key={q.id} style={{ background:"#0a0a0a", border:`1px solid ${isColdplay ? C.red : C.border}`, borderRadius:10, padding:14, marginBottom:10 }}>
+                        <div style={{ fontSize:12, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:8 }}>
+                          {q.question}
+                        </div>
+                        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+                          {[["A",q.optA],["B",q.optB]].map(([side,label]) => {
+                            const sel = answer===side;
+                            const dangerChoice = q.id==="q16" && side==="B";
+                            return (
+                              <div key={side} onClick={()=>setFastMoney(q.id,side)}
+                                style={{ padding:"10px 12px", borderRadius:8, cursor:"pointer", textAlign:"center",
+                                  border:`2px solid ${sel ? (dangerChoice ? C.red : C.champagne) : C.border2}`,
+                                  background: sel ? (dangerChoice ? C.redDim : C.champagneDim) : "#111" }}>
+                                <div style={{ fontSize:13, lineHeight:1.3, fontWeight:sel?700:400,
+                                  color: sel ? (dangerChoice ? C.red : C.champagne) : C.bone }}>
+                                  {label}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {/* Coldplay warning */}
+                        {isColdplay && (
+                          <div style={{ marginTop:10, padding:"8px 12px", background:C.redDim, border:`1px solid ${C.red}`, borderRadius:8, fontSize:11, color:C.red, lineHeight:1.5 }}>
+                            ⚠️ {q.warn}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })}
+
             {Object.keys(member.fastMoney||{}).length===FAST_MONEY.length && (
-              <div style={{ background:`${C.champagne}11`, border:`1px solid ${C.champagne}44`, borderRadius:10, padding:14, textAlign:"center" }}>
+              <div style={{ background:`${C.champagne}11`, border:`1px solid ${C.champagne}44`, borderRadius:10, padding:14, textAlign:"center", marginBottom:10 }}>
                 <div style={{ fontSize:22, marginBottom:6 }}>🏁</div>
                 <div style={{ fontSize:13, color:C.champagne, fontWeight:600 }}>Fast Money complete!</div>
-                <div style={{ fontSize:11, color:C.dim, marginTop:4 }}>Your picks are now on your public profile.</div>
+                <div style={{ fontSize:11, color:C.dim, marginTop:4 }}>Your picks are on your public profile. Choose wisely. Especially Q16.</div>
               </div>
             )}
           </>
         )}
+
 
         {/* POINTS TAB */}
         {tab==="points" && (
@@ -1041,7 +1191,7 @@ const App = () => {
   const tier = getTier(currentUser.points);
 
   return (
-    <div style={{ display:"flex", flexDirection:"column", height:"100vh", background:C.midnight, color:C.bone }}>
+    <div style={{ display:"flex", flexDirection:"column", height:"100dvh", background:C.midnight, color:C.bone }}>
 
       {/* Header */}
       <header style={{ background:C.midnight, borderBottom:`1px solid ${C.border}`, padding:"13px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0, zIndex:50 }}>
@@ -1061,6 +1211,10 @@ const App = () => {
           </div>
         </div>
       </header>
+      <PitPassBanner member={currentUser} onDismiss={() => {
+        const activated = new Date().toISOString();
+        updateCurrentUser({ ...currentUser, pitPassActivated: activated });
+      }} />
 
       {/* Map — only on roads list view */}
       {screen === "roads" && !showRoadDetail && (
