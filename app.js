@@ -1,6 +1,6 @@
 // ============================================================
 // CHASIN' CURVES — app.js
-// Scott Claude Van Dam — v1.6
+// Scott Claude Van Dam — v1.7
 // Fix: Garage now has dedicated KV key (garage:memberId)
 //      Vehicles persist correctly across reloads
 //      No more merge collision with seed data on init
@@ -527,17 +527,21 @@ const RoadDetail = ({ road, onClose, currentUser, onPointsEarned }) => {
 };
 
 // ─── GARAGE SECTION ──────────────────────────────────────────
-const GarageView = ({ member, onUpdate, onPointsEarned }) => {
+const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh }) => {
   const [showAdd, setShowAdd] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ make: "", model: "", year: "", variant: "", colour: "", notes: "" });
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!form.make || !form.model) return;
+    setSaving(true);
     const v = { id: `v${Date.now()}`, ...form, avatar: null, primary: member.garage.length === 0 };
-    onUpdate({ ...member, garage: [...member.garage, v] });
+    await onUpdate({ ...member, garage: [...member.garage, v] });
     onPointsEarned("add_vehicle");
     setForm({ make: "", model: "", year: "", variant: "", colour: "", notes: "" });
     setShowAdd(false);
+    setSaving(false);
+    if (onRefresh) await onRefresh();
   };
 
   const setPrimary = id => {
@@ -562,7 +566,7 @@ const GarageView = ({ member, onUpdate, onPointsEarned }) => {
           <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, color: C.champagne }}>The Garage</div>
           <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>Your fleet. Select your ride for the day.</div>
         </div>
-        <Btn size="sm" onClick={() => setShowAdd(true)}>+ Add Vehicle</Btn>
+        <Btn size="sm" onClick={() => setShowAdd(true)} disabled={saving}>{saving ? "Saving..." : "+ Add Vehicle"}</Btn>
       </div>
 
       {member.garage.length === 0 && (
@@ -611,7 +615,7 @@ const GarageView = ({ member, onUpdate, onPointsEarned }) => {
           <Input label="Notes" value={form.notes} onChange={v => setForm(f => ({...f, notes: v}))} placeholder="Any notes about this vehicle..." multiline />
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <Btn variant="ghost" onClick={() => setShowAdd(false)} style={{ flex: 1 }}>Cancel</Btn>
-            <Btn onClick={handleAdd} style={{ flex: 2 }}>Add to Garage</Btn>
+            <Btn onClick={handleAdd} disabled={saving} style={{ flex: 2 }}>{saving ? "Saving..." : "Add to Garage"}</Btn>
           </div>
         </Modal>
       )}
@@ -1216,6 +1220,16 @@ const App = () => {
     } catch {}
   }, []);
 
+  // ── Re-fetch garage from KV and sync into state ────────────
+  const refreshGarage = useCallback(async () => {
+    try {
+      const garage = await api.getGarage(currentUser.id);
+      if (Array.isArray(garage)) {
+        setCurrentUser(prev => ({ ...prev, garage }));
+      }
+    } catch {}
+  }, [currentUser.id]);
+
   const states = ["All", ...Array.from(new Set(roads.map(r => r.state)))];
   const filteredRoads = roads
     .filter(r => filterState === "All" || r.state === filterState)
@@ -1337,7 +1351,7 @@ const App = () => {
 
         {screen === "garage" && (
           <div style={{ flex:1, overflowY:"auto" }}>
-            <GarageView member={currentUser} onUpdate={updateCurrentUser} onPointsEarned={earnPoints} />
+            <GarageView member={currentUser} onUpdate={updateCurrentUser} onPointsEarned={earnPoints} onRefresh={refreshGarage} />
           </div>
         )}
 
