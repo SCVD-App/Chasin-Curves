@@ -1,8 +1,9 @@
 // ============================================================
 // CHASIN' CURVES — app.js
-// Scott Claude Van Dam — v1.1
-// Features: Map, Roads, Members, Garage, Trips, Points,
-//           Extended Profile, Skills, Fast Money Q&A
+// Scott Claude Van Dam — v1.6
+// Fix: Garage now has dedicated KV key (garage:memberId)
+//      Vehicles persist correctly across reloads
+//      No more merge collision with seed data on init
 // ============================================================
 
 const { useState, useEffect, useRef, useCallback } = React;
@@ -25,6 +26,7 @@ const C = {
   dim: '#555',
   faint: '#333',
 };
+
 // ─── API CONFIG ──────────────────────────────────────────────
 const API = "https://chasin-curves.emblen-scott.workers.dev";
 
@@ -35,6 +37,10 @@ const api = {
   getMember: (id) => fetch(`${API}/member/${id}`).then(r => r.json()),
   postMember: (member) => fetch(`${API}/member`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(member) }).then(r => r.json()),
   updateMember: (id, updates) => fetch(`${API}/member/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }).then(r => r.json()),
+  // ── Garage — dedicated KV key, no merge collisions ────────
+  getGarage: (id) => fetch(`${API}/garage/${id}`).then(r => r.json()),
+  saveGarage: (id, garage) => fetch(`${API}/garage/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ garage }) }).then(r => r.json()),
+  // ──────────────────────────────────────────────────────────
   getTrips: () => fetch(`${API}/trips`).then(r => r.json()),
   postTrip: (trip) => fetch(`${API}/trips`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(trip) }).then(r => r.json()),
   updateTrip: (id, updates) => fetch(`${API}/trips/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }).then(r => r.json()),
@@ -117,7 +123,6 @@ const PitPassBanner = ({ member, onDismiss }) => {
   const total = PIT_PASS_REQUIREMENTS.length;
   const pct = Math.round((progress / total) * 100);
 
-  // Already activated — show countdown
   if (member.pitPassActivated) {
     const expiry = new Date(member.pitPassActivated);
     expiry.setDate(expiry.getDate() + PIT_PASS_DAYS);
@@ -134,7 +139,6 @@ const PitPassBanner = ({ member, onDismiss }) => {
     );
   }
 
-  // Completed but not yet activated
   if (completed && !member.pitPassActivated) {
     return (
       <div style={{ margin:"0 0 0 0", padding:"12px 16px", background:`linear-gradient(135deg, ${C.champagne}33, ${C.champagne}11)`, borderBottom:`1px solid ${C.champagne}66`, display:"flex", alignItems:"center", gap:10 }}>
@@ -150,7 +154,6 @@ const PitPassBanner = ({ member, onDismiss }) => {
     );
   }
 
-  // In progress — show on profile screen only (return null here, rendered in profile)
   return null;
 };
 
@@ -178,7 +181,7 @@ const PitPassProgress = ({ member }) => {
             <div style={{ width:18, height:18, borderRadius:"50%", background:done?C.champagne:"#1a1a1a", border:`2px solid ${done?C.champagne:C.border2}`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
               {done && <span style={{ fontSize:10, color:C.midnight }}>✓</span>}
             </div>
-            <div style={{ fontSize:12, color:done?C.bone:C.dim, textDecoration:done?"none":"none" }}>{req.label}</div>
+            <div style={{ fontSize:12, color:done?C.bone:C.dim }}>{req.label}</div>
           </div>
         );
       })}
@@ -358,13 +361,11 @@ const PointsBadge = ({ pts, style: sx }) => {
 
 // ─── MAP COMPONENT ───────────────────────────────────────────
 const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
-  // Simplified schematic map — real app would use Mapbox/Google Maps
   const toX = lng => Math.max(3, Math.min(95, ((lng - 136) / 20) * 100));
   const toY = lat => Math.max(3, Math.min(95, ((lat + 45) / 25) * 100));
 
   return (
     <div style={{ position: "relative", height: 220, background: "#0a0f14", borderBottom: `1px solid ${C.border}`, overflow: "hidden" }}>
-      {/* Topo lines */}
       <svg style={{ position: "absolute", inset: 0, opacity: 0.05 }} viewBox="0 0 800 220" preserveAspectRatio="none">
         <path d="M0,110 Q100,60 200,100 Q300,140 400,80 Q500,30 600,90 Q700,140 800,70" stroke={C.champagne} strokeWidth="1" fill="none"/>
         <path d="M0,130 Q150,70 300,120 Q450,170 600,100 Q700,60 800,110" stroke={C.champagne} strokeWidth="1" fill="none"/>
@@ -373,10 +374,7 @@ const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
       </svg>
       {[...Array(10)].map((_,i) => <div key={i} style={{ position:"absolute", left:`${(i+1)*9}%`, top:0, bottom:0, borderLeft:`1px solid #ffffff06` }}/>)}
       {[...Array(6)].map((_,i) => <div key={i} style={{ position:"absolute", top:`${(i+1)*14}%`, left:0, right:0, borderTop:`1px solid #ffffff06` }}/>)}
-
       <div style={{ position: "absolute", top: 10, left: 14, fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: "0.16em" }}>Eastern Australia</div>
-
-      {/* Road pins */}
       {roads.map(r => {
         const x = toX(r.startCoords.lng), y = toY(r.startCoords.lat);
         const isSelected = selected?.id === r.id;
@@ -386,8 +384,6 @@ const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
           </div>
         );
       })}
-
-      {/* Trip pins */}
       {trips.map(t => t.routes.map(rid => {
         const road = roads.find(r => r.id === rid);
         if (!road) return null;
@@ -400,8 +396,6 @@ const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
           </div>
         );
       }))}
-
-      {/* State labels */}
       <div style={{ position: "absolute", bottom: 8, right: 14, display: "flex", gap: 10 }}>
         {[["QLD",C.champagne],["NSW",C.blue],["TAS","#888"],["VIC","#666"]].map(([s,c]) => (
           <span key={s} style={{ fontSize: 9, color: c, letterSpacing: "0.12em", textTransform: "uppercase" }}>{s}</span>
@@ -423,7 +417,6 @@ const RoadDetail = ({ road, onClose, currentUser, onPointsEarned }) => {
 
   return (
     <div>
-      {/* Header */}
       <div style={{ padding: "18px 20px 14px", borderBottom: `1px solid ${C.border}` }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div style={{ flex: 1 }}>
@@ -450,8 +443,6 @@ const RoadDetail = ({ road, onClose, currentUser, onPointsEarned }) => {
           ))}
         </div>
       </div>
-
-      {/* Tabs */}
       <div style={{ display: "flex", borderBottom: `1px solid ${C.border}`, padding: "0 20px" }}>
         {tabs.map(([id,label]) => (
           <button key={id} onClick={() => setTab(id)} style={{ padding: "9px 14px", background: "none", border: "none", borderBottom: `2px solid ${tab===id ? C.champagne : "transparent"}`, color: tab===id ? C.champagne : C.dim, fontFamily: "'Josefin Sans', sans-serif", fontSize: 11, cursor: "pointer", textTransform: "uppercase", letterSpacing: "0.08em" }}>
@@ -459,8 +450,6 @@ const RoadDetail = ({ road, onClose, currentUser, onPointsEarned }) => {
           </button>
         ))}
       </div>
-
-      {/* Tab content */}
       <div style={{ padding: "16px 20px" }}>
         {tab === "overview" && (
           <>
@@ -483,7 +472,6 @@ const RoadDetail = ({ road, onClose, currentUser, onPointsEarned }) => {
             </div>
           </>
         )}
-
         {tab === "ratings" && (
           <>
             <div style={{ marginBottom: 20 }}>
@@ -497,7 +485,6 @@ const RoadDetail = ({ road, onClose, currentUser, onPointsEarned }) => {
             </div>
           </>
         )}
-
         {tab === "logistics" && (
           <>
             {[
@@ -515,7 +502,6 @@ const RoadDetail = ({ road, onClose, currentUser, onPointsEarned }) => {
             ))}
           </>
         )}
-
         {tab === "alerts" && (
           <>
             {road.alerts.length === 0
@@ -544,7 +530,6 @@ const RoadDetail = ({ road, onClose, currentUser, onPointsEarned }) => {
 const GarageView = ({ member, onUpdate, onPointsEarned }) => {
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ make: "", model: "", year: "", variant: "", colour: "", notes: "" });
-  const fileRef = useRef();
 
   const handleAdd = () => {
     if (!form.make || !form.model) return;
@@ -590,7 +575,6 @@ const GarageView = ({ member, onUpdate, onPointsEarned }) => {
       {member.garage.map(v => (
         <div key={v.id} style={{ background: "#0a0a0a", border: `1px solid ${v.primary ? C.champagne : C.border}`, borderRadius: 10, padding: 16, marginBottom: 12 }}>
           <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-            {/* Avatar */}
             <div style={{ position: "relative", flexShrink: 0 }}>
               <VehicleAvatar vehicle={v} size={56} />
               <label style={{ position: "absolute", bottom: -4, right: -4, width: 20, height: 20, background: C.champagne, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 10, border: `2px solid ${C.midnight}` }}>
@@ -598,8 +582,6 @@ const GarageView = ({ member, onUpdate, onPointsEarned }) => {
                 <input type="file" accept="image/*" onChange={e => handleAvatarUpload(v.id, e)} style={{ display: "none" }} />
               </label>
             </div>
-
-            {/* Details */}
             <div style={{ flex: 1 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
                 <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 17, fontWeight: 600, color: C.bone }}>
@@ -610,8 +592,6 @@ const GarageView = ({ member, onUpdate, onPointsEarned }) => {
               <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>{v.variant} · {v.colour}</div>
               {v.notes && <div style={{ fontSize: 12, color: C.dim, lineHeight: 1.5 }}>{v.notes}</div>}
             </div>
-
-            {/* Actions */}
             <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
               {!v.primary && <Btn size="sm" variant="ghost" onClick={() => setPrimary(v.id)}>Set Primary</Btn>}
             </div>
@@ -710,14 +690,11 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onPointsEarned }) =>
                 </div>
               </div>
             </div>
-
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
               {tripRoads.map(r => (
                 <span key={r.id} style={{ fontSize: 11, padding: "3px 10px", background: C.champagneDim, borderRadius: 20, color: C.champagne, border: `1px solid ${C.champagne}33` }}>{r.name}</span>
               ))}
             </div>
-
-            {/* Attendee avatars */}
             {trip.attendees?.length > 0 && (
               <div style={{ display: "flex", alignItems: "center", gap: -6, marginBottom: 10 }}>
                 {trip.attendees.map((a, i) => {
@@ -728,9 +705,7 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onPointsEarned }) =>
                 <span style={{ marginLeft: 10, fontSize: 11, color: C.dim }}>{trip.attendees.length} vehicle{trip.attendees.length !== 1 ? "s" : ""} joining</span>
               </div>
             )}
-
             {trip.notes && <div style={{ fontSize: 12, color: C.dim, marginBottom: 10, fontStyle: "italic" }}>{trip.notes}</div>}
-
             {!isJoined && trip.createdBy !== currentUser.id && (
               <Btn size="sm" variant="blue" onClick={() => joinTrip(trip.id)}>Join this Run</Btn>
             )}
@@ -746,7 +721,6 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onPointsEarned }) =>
             <Input label="Date" value={form.date} onChange={v => setForm(f=>({...f,date:v}))} type="date" />
             <Input label="Departure Time" value={form.time} onChange={v => setForm(f=>({...f,time:v}))} placeholder="07:30" />
           </div>
-
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Select Roads *</div>
             {roads.map(r => (
@@ -761,7 +735,6 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onPointsEarned }) =>
               </div>
             ))}
           </div>
-
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Your Vehicle</div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -772,7 +745,6 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onPointsEarned }) =>
               ))}
             </div>
           </div>
-
           <Input label="Notes" value={form.notes} onChange={v => setForm(f=>({...f,notes:v}))} placeholder="Meeting point, pace notes, anything else..." multiline />
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <Btn variant="ghost" onClick={() => setShowNew(false)} style={{ flex: 1 }}>Cancel</Btn>
@@ -799,7 +771,6 @@ const SKILLS_LIST = [
 ];
 
 const FAST_MONEY = [
-  // ── CARS ──
   { id:"q1",  category:"Cars",   question:"Holden or Ford?",               optA:"Holden 🦁",              optB:"Ford 🐎" },
   { id:"q2",  category:"Cars",   question:"BMW or Mercedes?",              optA:"BMW 🔵",                 optB:"Mercedes ⭐" },
   { id:"q3",  category:"Cars",   question:"Harley or Triumph?",            optA:"Harley 🦅",              optB:"Triumph 🇬🇧" },
@@ -808,24 +779,20 @@ const FAST_MONEY = [
   { id:"q6",  category:"Cars",   question:"Track day or Sunday cruise?",   optA:"Track Day 🏁",           optB:"Sunday Cruise ☕" },
   { id:"q7",  category:"Cars",   question:"Dawn patrol or midnight run?",  optA:"Dawn Patrol 🌅",         optB:"Midnight Run 🌙" },
   { id:"q8",  category:"Cars",   question:"Roads or Tracks?",              optA:"Open Roads 🛣",          optB:"Race Tracks 🏎" },
-  // ── SHED ──
   { id:"q9",  category:"Shed",   question:"Pirelli or Michelin?",          optA:"Pirelli 🇮🇹",            optB:"Michelin 🇫🇷" },
   { id:"q10", category:"Shed",   question:"NGK or Bosch?",                 optA:"NGK 🔥",                 optB:"Bosch ⚙️" },
   { id:"q11", category:"Shed",   question:"OEM or Aftermarket?",           optA:"OEM All Day 🏭",         optB:"Aftermarket Forever 🛠" },
   { id:"q12", category:"Shed",   question:"Fix it yourself or take it in?",optA:"DIY 🔧",                 optB:"Let the Pros handle it 🧑‍🔧" },
-  // ── MUSIC ──
   { id:"q13", category:"Music",  question:"Strat or Les Paul?",            optA:"Stratocaster 🎸",        optB:"Les Paul 🎸" },
   { id:"q14", category:"Music",  question:"SG or Telecaster?",             optA:"Gibson SG 🤘",           optB:"Telecaster 🤠" },
   { id:"q15", category:"Music",  question:"Marshall or Vox?",              optA:"Marshall 🔊",            optB:"Vox ✅" },
   { id:"q16", category:"Music",  question:"ZZ Top or Coldplay?",           optA:"ZZ Top 🧔🧔",            optB:"Coldplay ❌", warn:"Choosing Coldplay results in immediate lifetime ban. You have been warned." },
   { id:"q17", category:"Music",  question:"Vinyl or Spotify?",             optA:"Vinyl 💿",               optB:"Spotify 🎧" },
   { id:"q18", category:"Music",  question:"Live gig or studio album?",     optA:"Live — nothing else 🎤", optB:"Studio — the pure vision 🎵" },
-  // ── MOVIES ──
   { id:"q19", category:"Movies", question:"Steve McQueen or Paul Newman?", optA:"McQueen 🏎",             optB:"Newman 🧊" },
   { id:"q20", category:"Movies", question:"Bullitt or Le Mans?",           optA:"Bullitt 🚔",             optB:"Le Mans 🏁" },
   { id:"q21", category:"Movies", question:"Mad Max or Fast & Furious?",    optA:"Mad Max 🔥",             optB:"Fast & Furious 🏙" },
   { id:"q22", category:"Movies", question:"Top Gun or Days of Thunder?",   optA:"Top Gun ✈️",             optB:"Days of Thunder 🏎" },
-  // ── LIFE ──
   { id:"q23", category:"Life",   question:"Ginger or Maryanne?",           optA:"Ginger 💃",              optB:"Maryanne 🌺" },
   { id:"q24", category:"Life",   question:"Sofia Vergara or Rafael Nadal?",optA:"Sofia 🌹",               optB:"Rafa 🎾" },
   { id:"q25", category:"Life",   question:"Sunrise or sunset?",            optA:"Sunrise 🌅",             optB:"Sunset 🌇" },
@@ -864,7 +831,6 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
 
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%" }}>
-      {/* Header always visible */}
       <div style={{ padding:"16px 20px 0", background:C.midnight, flexShrink:0 }}>
         <div style={{ display:"flex", gap:14, alignItems:"center", marginBottom:14 }}>
           <div style={{ position:"relative", flexShrink:0 }}>
@@ -890,7 +856,6 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
 
       <div style={{ flex:1, overflowY:"auto", padding:20 }}>
 
-        {/* PROFILE TAB */}
         {tab==="profile" && (
           <>
             <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
@@ -941,7 +906,6 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
           </>
         )}
 
-        {/* SKILLS TAB */}
         {tab==="skills" && (
           <>
             <div style={{ marginBottom:14 }}>
@@ -971,15 +935,12 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
           </>
         )}
 
-        {/* FAST MONEY TAB */}
         {tab==="fastmoney" && (
           <>
             <div style={{ marginBottom:16 }}>
               <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:18, color:C.champagne, marginBottom:4 }}>Fast Money</div>
               <div style={{ fontSize:12, color:C.dim, lineHeight:1.6 }}>Twenty-eight questions. No wrong answers. One exception — see Q16. Tap your pick — shows on your public profile so people know who they're dealing with before they say g'day.</div>
             </div>
-
-            {/* Category sections */}
             {["Cars","Shed","Music","Movies","Life"].map(cat => {
               const catQ = FAST_MONEY.filter(q => q.category === cat);
               const catIcons = { Cars:"🚗", Shed:"🔧", Music:"🎸", Movies:"🎬", Life:"☀️" };
@@ -992,14 +953,12 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
                       {catQ.filter(q => member.fastMoney?.[q.id]).length}/{catQ.length} answered
                     </span>
                   </div>
-                  {catQ.map((q,i) => {
+                  {catQ.map((q) => {
                     const answer = member.fastMoney?.[q.id];
                     const isColdplay = q.id === "q16" && answer === "B";
                     return (
                       <div key={q.id} style={{ background:"#0a0a0a", border:`1px solid ${isColdplay ? C.red : C.border}`, borderRadius:10, padding:14, marginBottom:10 }}>
-                        <div style={{ fontSize:12, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:8 }}>
-                          {q.question}
-                        </div>
+                        <div style={{ fontSize:12, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:8 }}>{q.question}</div>
                         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
                           {[["A",q.optA],["B",q.optB]].map(([side,label]) => {
                             const sel = answer===side;
@@ -1017,7 +976,6 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
                             );
                           })}
                         </div>
-                        {/* Coldplay warning */}
                         {isColdplay && (
                           <div style={{ marginTop:10, padding:"8px 12px", background:C.redDim, border:`1px solid ${C.red}`, borderRadius:8, fontSize:11, color:C.red, lineHeight:1.5 }}>
                             ⚠️ {q.warn}
@@ -1029,7 +987,6 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
                 </div>
               );
             })}
-
             {Object.keys(member.fastMoney||{}).length===FAST_MONEY.length && (
               <div style={{ background:`${C.champagne}11`, border:`1px solid ${C.champagne}44`, borderRadius:10, padding:14, textAlign:"center", marginBottom:10 }}>
                 <div style={{ fontSize:22, marginBottom:6 }}>🏁</div>
@@ -1040,8 +997,6 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
           </>
         )}
 
-
-        {/* POINTS TAB */}
         {tab==="points" && (
           <>
             <div style={{ background:"#0a0a0a", border:`1px solid ${tier.color}44`, borderRadius:12, padding:16, marginBottom:14 }}>
@@ -1149,7 +1104,6 @@ const AddRoadModal = ({ onClose, onAdd, onPointsEarned }) => {
         <Input label="Food & Coffee (one per line)" value={form.food} onChange={v=>set("food",v)} multiline rows={2} placeholder="Local bakery&#10;Roadhouse" />
         <div style={{ gridColumn:"1/-1" }}><Input label="Meetup / Parking Spots (one per line)" value={form.meetups} onChange={v=>set("meetups",v)} multiline rows={2} placeholder="Town hall car park&#10;Rest area at summit" /></div>
       </div>
-
       <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:16, marginTop:4 }}>
         <div style={{ fontSize:12, color:C.champagne, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:14 }}>Your Ratings</div>
         {[["driveability","Driveability"],["accessibility","Accessibility"],["views","Views / Scenery"],["surface","Surface Quality"],["thrill","Thrill Factor"]].map(([k,l]) => (
@@ -1162,7 +1116,6 @@ const AddRoadModal = ({ onClose, onAdd, onPointsEarned }) => {
           </div>
         ))}
       </div>
-
       <div style={{ display:"flex", gap:10, marginTop:20 }}>
         <Btn variant="ghost" onClick={onClose} style={{ flex:1 }}>Cancel</Btn>
         <Btn onClick={handleSubmit} style={{ flex:2 }}>Submit Road</Btn>
@@ -1171,7 +1124,6 @@ const AddRoadModal = ({ onClose, onAdd, onPointsEarned }) => {
   );
 };
 
-// ─── MAIN APP ─────────────────────────────────────────────────
 // ─── MAIN APP ─────────────────────────────────────────────────
 const App = () => {
   const [roads, setRoads] = useState(SEED_ROADS);
@@ -1187,17 +1139,16 @@ const App = () => {
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState(false);
 
-  // ── Bootstrap — load from Worker on mount ──────────────────
+  // ── Bootstrap ──────────────────────────────────────────────
   useEffect(() => {
     const init = async () => {
       try {
-        // Load roads from KV — fall back to seed data if empty
+        // Load roads
         const apiRoads = await api.getRoads();
         if (Array.isArray(apiRoads) && apiRoads.length > 0) {
           setRoads(apiRoads);
           setSelected(apiRoads[0]);
         } else {
-          // First run — seed the Worker with our initial roads
           for (const road of SEED_ROADS) {
             await api.postRoad(road);
           }
@@ -1208,16 +1159,30 @@ const App = () => {
         const apiTrips = await api.getTrips();
         if (Array.isArray(apiTrips)) setTrips(apiTrips);
 
-        // Load current user profile — create if doesn't exist
+        // ── Load member + garage (separate KV keys) ────────────
         try {
           const profile = await api.getMember("scott_cc");
+          const garage  = await api.getGarage("scott_cc");
+
           if (profile && !profile.error) {
-            setCurrentUser({ ...SEED_MEMBERS[0], ...profile });
+            // Garage gets its own dedicated source of truth — never falls
+            // back to seed data once the member exists in KV
+            const resolvedGarage =
+              Array.isArray(garage) && garage.length > 0
+                ? garage
+                : (Array.isArray(profile.garage) && profile.garage.length > 0
+                    ? profile.garage
+                    : SEED_MEMBERS[0].garage);
+
+            setCurrentUser({ ...SEED_MEMBERS[0], ...profile, garage: resolvedGarage });
           } else {
+            // First ever run — seed both member and garage
             await api.postMember(SEED_MEMBERS[0]);
+            await api.saveGarage("scott_cc", SEED_MEMBERS[0].garage);
           }
         } catch {
           await api.postMember(SEED_MEMBERS[0]);
+          await api.saveGarage("scott_cc", SEED_MEMBERS[0].garage);
         }
 
       } catch (err) {
@@ -1231,7 +1196,7 @@ const App = () => {
     init();
   }, []);
 
-  // ── Earn points + sync to Worker ───────────────────────────
+  // ── Earn points ────────────────────────────────────────────
   const earnPoints = useCallback(async (action) => {
     const cfg = POINT_ACTIONS[action];
     if (!cfg) return;
@@ -1242,10 +1207,13 @@ const App = () => {
     try { await api.updateMember(currentUser.id, { points: updated.points }); } catch {}
   }, [currentUser]);
 
-  // ── Update user + sync to Worker ───────────────────────────
+  // ── Update user — saves member profile AND garage separately ─
   const updateCurrentUser = useCallback(async (updated) => {
     setCurrentUser(updated);
-    try { await api.updateMember(updated.id, updated); } catch {}
+    try {
+      await api.updateMember(updated.id, updated);
+      await api.saveGarage(updated.id, updated.garage || []);
+    } catch {}
   }, []);
 
   const states = ["All", ...Array.from(new Set(roads.map(r => r.state)))];
@@ -1255,8 +1223,6 @@ const App = () => {
 
   const tier = getTier(currentUser.points);
 
-
-  // Loading screen
   if (loading) return (
     <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100dvh", background:C.midnight, gap:16 }}>
       <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:32, fontWeight:700, color:C.champagne }}>
@@ -1276,7 +1242,6 @@ const App = () => {
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100dvh", background:C.midnight, color:C.bone }}>
 
-      {/* Header */}
       <header style={{ background:C.midnight, borderBottom:`1px solid ${C.border}`, padding:"13px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0, zIndex:50 }}>
         <div onClick={() => { setScreen("roads"); setShowRoadDetail(false); }} style={{ cursor:"pointer" }}>
           <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:22, fontWeight:700, color:C.champagne, lineHeight:1 }}>
@@ -1294,17 +1259,16 @@ const App = () => {
           </div>
         </div>
       </header>
+
       <PitPassBanner member={currentUser} onDismiss={() => {
         const activated = new Date().toISOString();
         updateCurrentUser({ ...currentUser, pitPassActivated: activated });
       }} />
 
-      {/* Map — only on roads list view */}
       {screen === "roads" && !showRoadDetail && (
         <MapView roads={roads} selected={selected} onSelect={r => { setSelected(r); setShowRoadDetail(true); }} trips={trips} currentUser={currentUser} />
       )}
 
-      {/* Filter bar — roads list only */}
       {screen === "roads" && !showRoadDetail && (
         <div style={{ padding:"10px 16px", borderBottom:`1px solid ${C.border}`, display:"flex", gap:8, alignItems:"center", flexShrink:0, flexWrap:"wrap" }}>
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search roads..." style={{ flex:1, minWidth:120, background:"#111", border:`1px solid ${C.border}`, borderRadius:6, padding:"6px 11px", color:C.bone, fontSize:12, outline:"none" }} />
@@ -1315,10 +1279,8 @@ const App = () => {
         </div>
       )}
 
-      {/* Content area */}
       <div style={{ flex:1, overflow:"hidden", display:"flex", position:"relative" }}>
 
-        {/* ROADS LIST — full width on mobile */}
         {screen === "roads" && !showRoadDetail && (
           <div style={{ flex:1, overflowY:"auto" }}>
             {filteredRoads.length === 0 && (
@@ -1330,7 +1292,6 @@ const App = () => {
             {filteredRoads.map(r => (
               <div key={r.id} onClick={() => { setSelected(r); setShowRoadDetail(true); }}
                 style={{ padding:"14px 16px", borderBottom:`1px solid #151515`, cursor:"pointer", display:"flex", gap:12, alignItems:"flex-start" }}>
-                {/* Coloured state pill */}
                 <div style={{ flexShrink:0, marginTop:3 }}>
                   <div style={{ width:8, height:8, borderRadius:"50%", background: r.alerts?.length ? C.red : r.featured ? C.champagne : C.dim }} />
                 </div>
@@ -1353,17 +1314,14 @@ const App = () => {
                     {r.tags.slice(0,3).map(t => <span key={t} style={{ fontSize:9, padding:"2px 8px", background:"#1a1a1a", borderRadius:20, color:C.dim, textTransform:"uppercase", letterSpacing:"0.06em", border:`1px solid ${C.border}` }}>{t}</span>)}
                   </div>
                 </div>
-                {/* Chevron */}
                 <div style={{ flexShrink:0, color:C.dim, fontSize:16, alignSelf:"center" }}>›</div>
               </div>
             ))}
           </div>
         )}
 
-        {/* ROAD DETAIL — full screen slide-in */}
         {screen === "roads" && showRoadDetail && selected && (
           <div style={{ position:"absolute", inset:0, background:C.midnight, overflowY:"auto", zIndex:20, display:"flex", flexDirection:"column" }}>
-            {/* Back bar */}
             <div style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 16px", borderBottom:`1px solid ${C.border}`, flexShrink:0, background:C.midnight, position:"sticky", top:0, zIndex:10 }}>
               <button onClick={() => setShowRoadDetail(false)}
                 style={{ display:"flex", alignItems:"center", gap:6, background:"none", border:"none", cursor:"pointer", color:C.champagne, fontFamily:"'Josefin Sans', sans-serif", fontSize:12, textTransform:"uppercase", letterSpacing:"0.08em", padding:"4px 0" }}>
@@ -1377,21 +1335,18 @@ const App = () => {
           </div>
         )}
 
-        {/* Garage */}
         {screen === "garage" && (
           <div style={{ flex:1, overflowY:"auto" }}>
             <GarageView member={currentUser} onUpdate={updateCurrentUser} onPointsEarned={earnPoints} />
           </div>
         )}
 
-        {/* Trips */}
         {screen === "trips" && (
           <div style={{ flex:1, overflowY:"auto" }}>
             <TripPlanner roads={roads} trips={trips} setTrips={setTrips} currentUser={currentUser} onPointsEarned={earnPoints} />
           </div>
         )}
 
-        {/* Profile */}
         {screen === "profile" && (
           <div style={{ flex:1, overflowY:"auto" }}>
             <ProfileView member={currentUser} onUpdate={updateCurrentUser} pointsLog={pointsLog} />
@@ -1399,7 +1354,6 @@ const App = () => {
         )}
       </div>
 
-      {/* Bottom nav — paddingBottom clears iPhone home indicator bar */}
       <nav style={{ background:C.midnight, borderTop:`1px solid ${C.border}`, display:"flex", flexShrink:0, paddingBottom:"env(safe-area-inset-bottom)" }}>
         {[
           { id:"roads", icon:"🛣", label:"Roads" },
@@ -1415,11 +1369,22 @@ const App = () => {
         ))}
       </nav>
 
-      {/* Modals */}
       {showAddRoad && (
         <AddRoadModal
           onClose={() => setShowAddRoad(false)}
-          onAdd={async r => { try { const res = await api.postRoad(r); const saved = res.road || r; setRoads(prev => [...prev, saved]); setSelected(saved); setShowRoadDetail(true); } catch { setRoads(prev => [...prev, r]); setSelected(r); setShowRoadDetail(true); } }}
+          onAdd={async r => {
+            try {
+              const res = await api.postRoad(r);
+              const saved = res.road || r;
+              setRoads(prev => [...prev, saved]);
+              setSelected(saved);
+              setShowRoadDetail(true);
+            } catch {
+              setRoads(prev => [...prev, r]);
+              setSelected(r);
+              setShowRoadDetail(true);
+            }
+          }}
           onPointsEarned={earnPoints}
         />
       )}
