@@ -1,6 +1,6 @@
 // ============================================================
 // CHASIN' CURVES — app.js
-// Scott Claude Van Dam — v1.7
+// Scott Claude Van Dam — v1.9
 // Fix: Garage now has dedicated KV key (garage:memberId)
 //      Vehicles persist correctly across reloads
 //      No more merge collision with seed data on init
@@ -527,10 +527,18 @@ const RoadDetail = ({ road, onClose, currentUser, onPointsEarned }) => {
 };
 
 // ─── GARAGE SECTION ──────────────────────────────────────────
-const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh }) => {
+const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh, onSelectVehicle }) => {
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ make: "", model: "", year: "", variant: "", colour: "", notes: "" });
+  const fileInputRefs = useRef({});
+
+  const triggerFileInput = (vehicleId) => {
+    if (fileInputRefs.current[vehicleId]) {
+      fileInputRefs.current[vehicleId].value = "";
+      fileInputRefs.current[vehicleId].click();
+    }
+  };
 
   const handleAdd = async () => {
     if (!form.make || !form.model) return;
@@ -559,12 +567,24 @@ const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh }) => {
     reader.readAsDataURL(file);
   };
 
+  const primaryVehicle = member.garage.find(v => v.primary);
+  const garageWallpaper = primaryVehicle?.photos?.length > 0
+    ? primaryVehicle.photos[primaryVehicle.heroPhoto || 0]
+    : primaryVehicle?.avatar || null;
+
   return (
-    <div style={{ padding: 20 }}>
+    <div style={{ position: "relative", minHeight: "100%" }}>
+      {/* Garage wallpaper from primary vehicle hero photo */}
+      {garageWallpaper && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 0, pointerEvents: "none" }}>
+          <img src={garageWallpaper} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "blur(18px) brightness(0.18)", transform: "scale(1.08)" }} />
+        </div>
+      )}
+      <div style={{ position: "relative", zIndex: 1, padding: 20 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
         <div>
           <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, color: C.champagne }}>The Garage</div>
-          <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>Your fleet. Select your ride for the day.</div>
+          <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>Your fleet. Tap a ride to open it.</div>
         </div>
         <Btn size="sm" onClick={() => setShowAdd(true)} disabled={saving}>{saving ? "Saving..." : "+ Add Vehicle"}</Btn>
       </div>
@@ -576,32 +596,40 @@ const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh }) => {
         </div>
       )}
 
-      {member.garage.map(v => (
-        <div key={v.id} style={{ background: "#0a0a0a", border: `1px solid ${v.primary ? C.champagne : C.border}`, borderRadius: 10, padding: 16, marginBottom: 12 }}>
-          <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-            <div style={{ position: "relative", flexShrink: 0 }}>
-              <VehicleAvatar vehicle={v} size={56} />
-              <label style={{ position: "absolute", bottom: -4, right: -4, width: 20, height: 20, background: C.champagne, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 10, border: `2px solid ${C.midnight}` }}>
-                📷
-                <input type="file" accept="image/*" onChange={e => handleAvatarUpload(v.id, e)} style={{ display: "none" }} />
-              </label>
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
-                <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 17, fontWeight: 600, color: C.bone }}>
-                  {v.year} {v.make} {v.model}
-                </div>
-                {v.primary && <Badge color={C.champagne}>★ Primary</Badge>}
+      {member.garage.map(v => {
+        const vHero = v.photos?.length > 0 ? v.photos[v.heroPhoto || 0] : v.avatar;
+        return (
+          <div key={v.id} onClick={() => onSelectVehicle(v)}
+            style={{ position: "relative", border: `1px solid ${v.primary ? C.champagne : C.border}`, borderRadius: 10, marginBottom: 12, overflow: "hidden", cursor: "pointer", minHeight: 90 }}>
+            {/* Card wallpaper if vehicle has hero photo */}
+            {vHero && (
+              <div style={{ position: "absolute", inset: 0 }}>
+                <img src={vHero} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "brightness(0.25)" }} />
               </div>
-              <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>{v.variant} · {v.colour}</div>
-              {v.notes && <div style={{ fontSize: 12, color: C.dim, lineHeight: 1.5 }}>{v.notes}</div>}
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
-              {!v.primary && <Btn size="sm" variant="ghost" onClick={() => setPrimary(v.id)}>Set Primary</Btn>}
+            )}
+            {!vHero && <div style={{ position: "absolute", inset: 0, background: "#0a0a0a" }} />}
+            <div style={{ position: "relative", zIndex: 1, padding: 16, display: "flex", gap: 14, alignItems: "flex-start" }}>
+              <div style={{ flexShrink: 0 }}>
+                <VehicleAvatar vehicle={v} size={56} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                  <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 17, fontWeight: 600, color: C.bone }}>
+                    {v.year} {v.make} {v.model}
+                  </div>
+                  {v.primary && <Badge color={C.champagne}>★ Primary</Badge>}
+                </div>
+                <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>{v.variant} · {v.colour}</div>
+                {v.notes && <div style={{ fontSize: 12, color: C.dim, lineHeight: 1.5 }}>{v.notes}</div>}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0, alignItems: "flex-end" }}>
+                {!v.primary && <Btn size="sm" variant="ghost" onClick={e => { e.stopPropagation(); setPrimary(v.id); }}>Set Primary</Btn>}
+                <span style={{ fontSize: 18, color: C.dim }}>›</span>
+              </div>
             </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
 
       {showAdd && (
         <Modal title="Add Vehicle" subtitle="50 points on your first upload" onClose={() => setShowAdd(false)}>
@@ -618,6 +646,161 @@ const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh }) => {
             <Btn onClick={handleAdd} disabled={saving} style={{ flex: 2 }}>{saving ? "Saving..." : "Add to Garage"}</Btn>
           </div>
         </Modal>
+      )}
+      </div>
+    </div>
+  );
+};
+
+// ─── VEHICLE DETAIL SCREEN ───────────────────────────────────
+const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRefresh }) => {
+  const [tab, setTab] = useState("gallery");
+  const [fullscreen, setFullscreen] = useState(null);
+  const photoInputRef = useRef(null);
+
+  const getHeroPhoto = () => {
+    const photos = vehicle.photos || [];
+    if (typeof vehicle.heroPhoto === "number" && photos[vehicle.heroPhoto]) return photos[vehicle.heroPhoto];
+    if (photos.length > 0) return photos[0];
+    return vehicle.avatar || null;
+  };
+
+  const updateVehicle = async (updated) => {
+    const newGarage = member.garage.map(v => v.id === updated.id ? updated : v);
+    await onUpdate({ ...member, garage: newGarage });
+    if (onRefresh) await onRefresh();
+  };
+
+  const handleAddPhoto = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    const existing = vehicle.photos || [];
+    const slots = 10 - existing.length;
+    if (slots <= 0) return;
+    const toRead = files.slice(0, slots);
+    let loaded = [];
+    toRead.forEach(file => {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        loaded.push(ev.target.result);
+        if (loaded.length === toRead.length) {
+          const photos = [...existing, ...loaded];
+          const heroPhoto = typeof vehicle.heroPhoto === "number" ? vehicle.heroPhoto : 0;
+          updateVehicle({ ...vehicle, photos, heroPhoto, avatar: photos[heroPhoto] });
+          onPointsEarned("upload_photo");
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const setHero = (idx) => {
+    const photos = vehicle.photos || [];
+    updateVehicle({ ...vehicle, heroPhoto: idx, avatar: photos[idx] });
+  };
+
+  const deletePhoto = (idx) => {
+    const photos = (vehicle.photos || []).filter((_, i) => i !== idx);
+    let heroPhoto = vehicle.heroPhoto || 0;
+    if (heroPhoto >= photos.length) heroPhoto = photos.length > 0 ? 0 : null;
+    updateVehicle({ ...vehicle, photos, heroPhoto, avatar: photos.length > 0 ? photos[heroPhoto] : null });
+  };
+
+  const hero = getHeroPhoto();
+  const photos = vehicle.photos || [];
+
+  return (
+    <div style={{ position: "absolute", inset: 0, background: C.midnight, zIndex: 20, display: "flex", flexDirection: "column", overflowY: "auto" }}>
+
+      {/* Hero photo wallpaper */}
+      <div style={{ position: "relative", width: "100%", height: 260, flexShrink: 0, background: "#0a0a0a", overflow: "hidden" }}>
+        {hero
+          ? <img src={hero} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 10 }}>
+              <span style={{ fontSize: 48, opacity: 0.15 }}>🚗</span>
+              <span style={{ fontSize: 11, color: C.dim, textTransform: "uppercase", letterSpacing: "0.1em" }}>No photo yet</span>
+            </div>
+        }
+        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to bottom, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0.1) 40%, rgba(13,13,13,0.95) 100%)" }} />
+        <button onClick={onBack} style={{ position: "absolute", top: 14, left: 16, background: "rgba(0,0,0,0.5)", border: "1px solid " + C.border2, borderRadius: 20, padding: "6px 14px", color: C.champagne, fontFamily: "Josefin Sans, sans-serif", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 18, lineHeight: 1 }}>‹</span> Garage
+        </button>
+        <div style={{ position: "absolute", bottom: 18, left: 20, right: 20 }}>
+          <div style={{ fontFamily: "Cormorant Garamond, serif", fontSize: 26, fontWeight: 700, color: "#fff", lineHeight: 1.1, textShadow: "0 2px 8px rgba(0,0,0,0.8)" }}>
+            {vehicle.year} {vehicle.make} {vehicle.model}
+          </div>
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", marginTop: 4 }}>{vehicle.variant} · {vehicle.colour}</div>
+          {vehicle.primary && <span style={{ fontSize: 10, color: C.champagne, textTransform: "uppercase", letterSpacing: "0.1em" }}>★ Primary Ride</span>}
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display: "flex", borderBottom: "1px solid " + C.border, flexShrink: 0, background: C.midnight }}>
+        <button onClick={() => setTab("gallery")}
+          style={{ flex: 1, padding: "12px 0", background: "none", border: "none", cursor: "pointer", color: tab === "gallery" ? C.champagne : C.dim, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", fontFamily: "Josefin Sans, sans-serif", borderBottom: tab === "gallery" ? "2px solid " + C.champagne : "2px solid transparent" }}>
+          Gallery
+        </button>
+      </div>
+
+      {/* Gallery tab */}
+      {tab === "gallery" && (
+        <div style={{ padding: 20, flex: 1 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div style={{ fontSize: 11, color: C.dim }}>{photos.length}/10 photos</div>
+            {photos.length < 10 && (
+              <Btn size="sm" onClick={() => { photoInputRef.current.value = ""; photoInputRef.current.click(); }}>+ Add Photos</Btn>
+            )}
+            <input ref={photoInputRef} type="file" accept="image/*" multiple onChange={handleAddPhoto} style={{ display: "none" }} />
+          </div>
+
+          {photos.length === 0 && (
+            <div style={{ textAlign: "center", padding: "40px 20px", color: C.dim, border: "1px dashed " + C.border2, borderRadius: 12 }}>
+              <div style={{ fontSize: 36, marginBottom: 12 }}>📷</div>
+              <div style={{ fontSize: 13, marginBottom: 6, color: C.muted }}>No photos yet</div>
+              <div style={{ fontSize: 11 }}>Add up to 10 photos of your ride</div>
+            </div>
+          )}
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+            {photos.map((photo, idx) => (
+              <div key={idx} style={{ position: "relative", aspectRatio: "1", borderRadius: 8, overflow: "hidden", border: "2px solid " + (vehicle.heroPhoto === idx ? C.champagne : "transparent") }}>
+                <img src={photo} alt="" onClick={() => setFullscreen(idx)} style={{ width: "100%", height: "100%", objectFit: "cover", cursor: "pointer" }} />
+                <button onClick={() => setHero(idx)}
+                  style={{ position: "absolute", top: 4, left: 4, background: vehicle.heroPhoto === idx ? C.champagne : "rgba(0,0,0,0.6)", border: "none", borderRadius: "50%", width: 24, height: 24, fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  ★
+                </button>
+                <button onClick={() => deletePhoto(idx)}
+                  style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,0.6)", border: "none", borderRadius: "50%", width: 24, height: 24, fontSize: 12, cursor: "pointer", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  ✕
+                </button>
+                {vehicle.heroPhoto === idx && (
+                  <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: C.champagne + "cc", padding: "3px 0", textAlign: "center", fontSize: 9, color: C.midnight, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>Wallpaper</div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {vehicle.notes && (
+            <div style={{ marginTop: 20, padding: 14, background: "#0a0a0a", borderRadius: 8, border: "1px solid " + C.border }}>
+              <div style={{ fontSize: 10, color: C.champagne, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6 }}>Notes</div>
+              <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{vehicle.notes}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {fullscreen !== null && (
+        <div onClick={() => setFullscreen(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.95)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <img src={photos[fullscreen]} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+          <button onClick={e => { e.stopPropagation(); setFullscreen(null); }}
+            style={{ position: "absolute", top: 20, right: 20, background: "rgba(255,255,255,0.1)", border: "none", borderRadius: "50%", width: 36, height: 36, color: "#fff", fontSize: 18, cursor: "pointer" }}>✕</button>
+          <div style={{ position: "absolute", bottom: 24, left: 0, right: 0, display: "flex", justifyContent: "center", gap: 8 }}>
+            {photos.map((_, i) => (
+              <div key={i} onClick={e => { e.stopPropagation(); setFullscreen(i); }}
+                style={{ width: 8, height: 8, borderRadius: "50%", background: i === fullscreen ? C.champagne : "rgba(255,255,255,0.3)", cursor: "pointer" }} />
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1137,6 +1320,7 @@ const App = () => {
   const [selected, setSelected] = useState(null);
   const [screen, setScreen] = useState("roads");
   const [showAddRoad, setShowAddRoad] = useState(false);
+  const [selectedVehicle, setSelectedVehicle] = useState(null);
   const [showRoadDetail, setShowRoadDetail] = useState(false);
   const [filterState, setFilterState] = useState("All");
   const [search, setSearch] = useState("");
@@ -1350,8 +1534,18 @@ const App = () => {
         )}
 
         {screen === "garage" && (
-          <div style={{ flex:1, overflowY:"auto" }}>
-            <GarageView member={currentUser} onUpdate={updateCurrentUser} onPointsEarned={earnPoints} onRefresh={refreshGarage} />
+          <div style={{ flex:1, overflowY:"auto", position:"relative" }}>
+            <GarageView member={currentUser} onUpdate={updateCurrentUser} onPointsEarned={earnPoints} onRefresh={refreshGarage} onSelectVehicle={v => setSelectedVehicle(v)} />
+            {selectedVehicle && (
+              <VehicleDetail
+                vehicle={currentUser.garage.find(v => v.id === selectedVehicle.id) || selectedVehicle}
+                member={currentUser}
+                onUpdate={updateCurrentUser}
+                onPointsEarned={earnPoints}
+                onRefresh={refreshGarage}
+                onBack={() => setSelectedVehicle(null)}
+              />
+            )}
           </div>
         )}
 
