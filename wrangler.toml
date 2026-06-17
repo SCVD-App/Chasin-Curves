@@ -1,7 +1,0 @@
-name = "chasin-curves"
-main = "worker.js"
-compatibility_date = "2024-01-01"
-
-[[kv_namespaces]]
-binding = "CURVES_KV"
-id = "15a6df8df6a34441b753e660eed03cdb"
