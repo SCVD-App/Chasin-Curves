@@ -662,6 +662,7 @@ const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh, onSelectVehic
 const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRefresh }) => {
   const [tab, setTab] = useState("gallery");
   const [fullscreen, setFullscreen] = useState(null);
+  const [saving, setSaving] = useState(false);
   const photoInputRef = useRef(null);
 
   const getHeroPhoto = () => {
