@@ -168,8 +168,10 @@ export default {
       const photoId = `${userId}_${vehicleId}_${Date.now()}.${ext}`;
 
       // Upload to R2
+      // Pixel phones use .MP extension — force image/jpeg if type missing or non-image
+      const mimeType = (file.type && file.type.startsWith('image/')) ? file.type : 'image/jpeg';
       await env.MEDIA_BUCKET.put(photoId, file.stream(), {
-        httpMetadata: { contentType: file.type || 'image/jpeg' },
+        httpMetadata: { contentType: mimeType },
       });
 
       const photoUrl = `${R2_PUBLIC_BASE}/${photoId}`;

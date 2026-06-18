@@ -687,7 +687,6 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
     setSaving(true);
     try {
       for (const file of toUpload) {
-        if (!file.type.startsWith("image/")) continue;
         const formData = new FormData();
         formData.append("photo", file);
         formData.append("vehicleId", vehicle.id);
