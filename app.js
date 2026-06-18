@@ -1,9 +1,9 @@
 // ============================================================
 // CHASIN' CURVES — app.js
-// Scott Claude Van Dam — v2.0 — R2 photo storage
-// Fix: Garage now has dedicated KV key (garage:memberId)
-//      Vehicles persist correctly across reloads
-//      No more merge collision with seed data on init
+// Scott Claude Van Dam — v2.1 — Bug fixes
+// Fix 1: saveGarage sends raw array (not {garage:[]} wrapper)
+// Fix 2: heroPhoto stored/compared as photoId string everywhere
+// Fix 3: points loaded from KV only — seed member removed from init path
 // ============================================================
 
 const { useState, useEffect, useRef, useCallback } = React;
@@ -37,10 +37,9 @@ const api = {
   getMember: (id) => fetch(`${API}/member/${id}`).then(r => r.json()),
   postMember: (member) => fetch(`${API}/member`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(member) }).then(r => r.json()),
   updateMember: (id, updates) => fetch(`${API}/member/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }).then(r => r.json()),
-  // ── Garage — dedicated KV key, no merge collisions ────────
+  // FIX 1: send raw array, not {garage:[...]} wrapper
   getGarage: (id) => fetch(`${API}/garage/${id}`).then(r => r.json()),
-  saveGarage: (id, garage) => fetch(`${API}/garage/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ garage }) }).then(r => r.json()),
-  // ──────────────────────────────────────────────────────────
+  saveGarage: (id, garage) => fetch(`${API}/garage/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(garage) }).then(r => r.json()),
   getTrips: () => fetch(`${API}/trips`).then(r => r.json()),
   postTrip: (trip) => fetch(`${API}/trips`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(trip) }).then(r => r.json()),
   updateTrip: (id, updates) => fetch(`${API}/trips/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }).then(r => r.json()),
@@ -111,7 +110,7 @@ const PIT_PASS_REQUIREMENTS = [
   { id: "location", label: "Location added",                check: m => m.location?.length > 2 },
   { id: "fastmoney",label: "At least one Fast Money answer",check: m => Object.keys(m.fastMoney||{}).length >= 1 },
   { id: "vehicle",  label: "Vehicle added to garage",       check: m => m.garage?.length >= 1 },
-  { id: "vphoto",   label: "Vehicle photo uploaded",        check: m => m.garage?.some(v => !!v.avatar) },
+  { id: "vphoto",   label: "Vehicle photo uploaded",        check: m => m.garage?.some(v => (v.photos||[]).length > 0) },
 ];
 
 const checkPitPass = member => PIT_PASS_REQUIREMENTS.every(r => r.check(member));
@@ -189,18 +188,15 @@ const PitPassProgress = ({ member }) => {
   );
 };
 
+// SEED_MEMBERS kept only for TripPlanner display (trip organiser lookup) — never used for init
 const SEED_MEMBERS = [
   {
     id: "scott_cc", username: "scott_cc", displayName: "Scott", location: "Mount Mellum, QLD",
     bio: "25 years on the rail network. Now chasing curves instead of coal trains. Roads, rivers & riffs.",
     avatar: null, joinDate: "2026-03-01",
-    points: 1240, pointsExpiry: [], tier: "Pioneer",
-    garage: [
-      { id: "v1", make: "BMW", model: "Z4", year: 2005, variant: "E85 3.0i Roadster", colour: "Imola Red", notes: "My daily curve-chaser. Just had the steering rack done.", avatar: null, primary: true },
-      { id: "v2", make: "Jaguar", model: "XJ8", year: 2004, variant: "X350 3.5L V8", colour: "Champagne", notes: "The long-legged grand tourer. Air suspension rebuild underway.", avatar: null, primary: false },
-      { id: "v3", make: "Triumph", model: "Thunderbird", year: 2013, variant: "1600cc", colour: "Midnight Black", notes: "Two wheels when the road demands it.", avatar: null, primary: false },
-    ],
-    roadsAdded: [1, 2, 3, 4], reviewsWritten: 8, tripsPlanned: 3,
+    points: 0, pointsExpiry: [], tier: "Explorer",
+    garage: [],
+    roadsAdded: [], reviewsWritten: 0, tripsPlanned: 0,
   },
 ];
 
@@ -573,14 +569,20 @@ const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh, onSelectVehic
     }
   };
 
+  // FIX 2: heroPhoto is now a photoId string — look up by id, not index
   const primaryVehicle = member.garage.find(v => v.primary);
-  const garageWallpaper = primaryVehicle?.photos?.length > 0
-    ? (primaryVehicle.photos[primaryVehicle.heroPhoto || 0]?.url || primaryVehicle.photos[0]?.url)
-    : primaryVehicle?.avatar || null;
+  const getVehicleHeroUrl = (v) => {
+    const photos = v.photos || [];
+    if (v.heroPhoto) {
+      const hero = photos.find(p => p.id === v.heroPhoto);
+      if (hero) return hero.url;
+    }
+    return photos.length > 0 ? photos[0].url : (v.avatar || null);
+  };
+  const garageWallpaper = primaryVehicle ? getVehicleHeroUrl(primaryVehicle) : null;
 
   return (
     <div style={{ position: "relative", minHeight: "100%" }}>
-      {/* Garage wallpaper from primary vehicle hero photo */}
       {garageWallpaper && (
         <div style={{ position: "fixed", inset: 0, zIndex: 0, pointerEvents: "none" }}>
           <img src={garageWallpaper} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "blur(18px) brightness(0.18)", transform: "scale(1.08)" }} />
@@ -603,11 +605,10 @@ const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh, onSelectVehic
       )}
 
       {member.garage.map(v => {
-        const vHero = v.photos?.length > 0 ? (v.photos[v.heroPhoto || 0]?.url || v.photos[0]?.url) : v.avatar;
+        const vHero = getVehicleHeroUrl(v);
         return (
           <div key={v.id} onClick={() => onSelectVehicle(v)}
             style={{ position: "relative", border: `1px solid ${v.primary ? C.champagne : C.border}`, borderRadius: 10, marginBottom: 12, overflow: "hidden", cursor: "pointer", minHeight: 90 }}>
-            {/* Card wallpaper if vehicle has hero photo */}
             {vHero && (
               <div style={{ position: "absolute", inset: 0 }}>
                 <img src={vHero} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "brightness(0.25)" }} />
@@ -665,11 +666,14 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
   const [saving, setSaving] = useState(false);
   const photoInputRef = useRef(null);
 
+  // FIX 2: heroPhoto is a photoId string — find by id, not index
   const getHeroPhoto = () => {
     const photos = vehicle.photos || [];
-    if (typeof vehicle.heroPhoto === "number" && photos[vehicle.heroPhoto]) return photos[vehicle.heroPhoto].url;
-    if (photos.length > 0) return photos[0].url;
-    return vehicle.avatar || null;
+    if (vehicle.heroPhoto) {
+      const hero = photos.find(p => p.id === vehicle.heroPhoto);
+      if (hero) return hero.url;
+    }
+    return photos.length > 0 ? photos[0].url : (vehicle.avatar || null);
   };
 
   const updateVehicle = async (updated) => {
@@ -710,10 +714,12 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
     }
   };
 
+  // FIX 2: setHero stores photoId string, not array index
   const setHero = async (photoId) => {
     const photos = vehicle.photos || [];
-    const idx = photos.findIndex(p => p.id === photoId);
-    updateVehicle({ ...vehicle, heroPhoto: idx, heroPhotoUrl: photos[idx]?.url });
+    const photo = photos.find(p => p.id === photoId);
+    if (!photo) return;
+    await updateVehicle({ ...vehicle, heroPhoto: photoId, heroPhotoUrl: photo.url });
   };
 
   const deletePhoto = async (photoId) => {
@@ -772,7 +778,9 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <div style={{ fontSize: 11, color: C.dim }}>{photos.length}/10 photos</div>
             {photos.length < 10 && (
-              <Btn size="sm" onClick={() => { photoInputRef.current.value = ""; photoInputRef.current.click(); }}>+ Add Photos</Btn>
+              <Btn size="sm" onClick={() => { photoInputRef.current.value = ""; photoInputRef.current.click(); }} disabled={saving}>
+                {saving ? "Uploading..." : "+ Add Photos"}
+              </Btn>
             )}
             <input ref={photoInputRef} type="file" accept="image/*" multiple onChange={handleAddPhoto} style={{ display: "none" }} />
           </div>
@@ -785,23 +793,27 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
             </div>
           )}
 
+          {/* FIX 2: compare heroPhoto (string id) to photo.id — not to array index */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-            {photos.map((photo, idx) => (
-              <div key={photo.id} style={{ position: "relative", aspectRatio: "1", borderRadius: 8, overflow: "hidden", border: "2px solid " + (vehicle.heroPhoto === idx ? C.champagne : "transparent") }}>
-                <img src={photo.url} alt="" onClick={() => setFullscreen(idx)} style={{ width: "100%", height: "100%", objectFit: "cover", cursor: "pointer" }} />
-                <button onClick={() => setHero(photo.id)}
-                  style={{ position: "absolute", top: 4, left: 4, background: vehicle.heroPhoto === idx ? C.champagne : "rgba(0,0,0,0.6)", border: "none", borderRadius: "50%", width: 24, height: 24, fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  ★
-                </button>
-                <button onClick={() => deletePhoto(photo.id)}
-                  style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,0.6)", border: "none", borderRadius: "50%", width: 24, height: 24, fontSize: 12, cursor: "pointer", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  ✕
-                </button>
-                {vehicle.heroPhoto === idx && (
-                  <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: C.champagne + "cc", padding: "3px 0", textAlign: "center", fontSize: 9, color: C.midnight, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>Wallpaper</div>
-                )}
-              </div>
-            ))}
+            {photos.map((photo) => {
+              const isHero = vehicle.heroPhoto === photo.id;
+              return (
+                <div key={photo.id} style={{ position: "relative", aspectRatio: "1", borderRadius: 8, overflow: "hidden", border: "2px solid " + (isHero ? C.champagne : "transparent") }}>
+                  <img src={photo.url} alt="" onClick={() => setFullscreen(photos.indexOf(photo))} style={{ width: "100%", height: "100%", objectFit: "cover", cursor: "pointer" }} />
+                  <button onClick={() => setHero(photo.id)}
+                    style={{ position: "absolute", top: 4, left: 4, background: isHero ? C.champagne : "rgba(0,0,0,0.6)", border: "none", borderRadius: "50%", width: 24, height: 24, fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    ★
+                  </button>
+                  <button onClick={() => deletePhoto(photo.id)}
+                    style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,0.6)", border: "none", borderRadius: "50%", width: 24, height: 24, fontSize: 12, cursor: "pointer", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    ✕
+                  </button>
+                  {isHero && (
+                    <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: C.champagne + "cc", padding: "3px 0", textAlign: "center", fontSize: 9, color: C.midnight, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>Wallpaper</div>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           {vehicle.notes && (
@@ -1101,8 +1113,7 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
                 </>
               )}
             </div>
-            <PitPassProgress member={member} />
-            <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16 }}>
+            <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
               <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne, marginBottom:12 }}>Community Stats</div>
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
                 {[["🛣",member.roadsAdded?.length||0,"Roads"],["✍️",member.reviewsWritten||0,"Reviews"],["🏁",member.tripsPlanned||0,"Trips"],["🚗",member.garage?.length||0,"Vehicles"],["⭐",member.points||0,"Points"],["🏆",getTier(member.points).name,"Tier"]].map(([icon,val,label])=>(
@@ -1375,16 +1386,18 @@ const App = () => {
         const apiTrips = await api.getTrips();
         if (Array.isArray(apiTrips)) setTrips(apiTrips);
 
-        // ── Load member + garage from KV — KV is source of truth ──
+        // ── Load member + garage from KV — KV is sole source of truth ──
+        // FIX 3: load points from KV only; seed member has points:0 so no bleed
         const profile = await api.getMember("scott_cc");
         const garage  = await api.getGarage("scott_cc");
         if (profile && !profile.error) {
           const resolvedGarage = Array.isArray(garage) ? garage : [];
+          // Spread profile from KV — includes the real points value, not seed
           setCurrentUser(prev => ({ ...prev, ...profile, garage: resolvedGarage }));
         }
 
       } catch (err) {
-        console.error("API init failed — using seed data", err);
+        console.error("API init failed — using local state", err);
         setApiError(true);
         setSelected(SEED_ROADS[0]);
       } finally {
@@ -1409,8 +1422,10 @@ const App = () => {
   const updateCurrentUser = useCallback(async (updated) => {
     setCurrentUser(updated);
     try {
-      await api.updateMember(updated.id, updated);
-      await api.saveGarage(updated.id, updated.garage || []);
+      // Strip garage from member record — garage has its own KV key
+      const { garage, ...memberData } = updated;
+      await api.updateMember(updated.id, memberData);
+      await api.saveGarage(updated.id, garage || []);
     } catch {}
   }, []);
 
