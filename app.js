@@ -1,9 +1,12 @@
 // ============================================================
 // CHASIN' CURVES — app.js
-// Scott Claude Van Dam — v2.1 — Bug fixes
+// Scott Claude Van Dam — v2.2 — Login flow
 // Fix 1: saveGarage sends raw array (not {garage:[]} wrapper)
 // Fix 2: heroPhoto stored/compared as photoId string everywhere
 // Fix 3: points loaded from KV only — seed member removed from init path
+// v2.2: Username login screen — Option A (join or sign in, one flow)
+//       Username persisted to localStorage so returning users skip login
+//       No hardcoded scott_cc in init path
 // ============================================================
 
 const { useState, useEffect, useRef, useCallback } = React;
@@ -1346,16 +1349,77 @@ const AddRoadModal = ({ onClose, onAdd, onPointsEarned }) => {
   );
 };
 
+// ─── LOGIN SCREEN ─────────────────────────────────────────────
+const LoginScreen = ({ onLogin, loading, error }) => {
+  const [username, setUsername] = useState("");
+  const clean = username.trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
+
+  const handleSubmit = () => {
+    if (clean.length < 3) return;
+    onLogin(clean);
+  };
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100dvh", background:C.midnight, padding:32, gap:0 }}>
+      {/* Logo */}
+      <div style={{ textAlign:"center", marginBottom:40 }}>
+        <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:42, fontWeight:700, color:C.champagne, lineHeight:1 }}>
+          Chasin<span style={{ color:C.red }}>'</span> Curves
+        </div>
+        <div style={{ fontSize:11, color:"#444", letterSpacing:"0.2em", textTransform:"uppercase", marginTop:8 }}>Roads, Rivers & Riffs</div>
+      </div>
+
+      {/* Animated road lines */}
+      <div style={{ width:"100%", maxWidth:340, marginBottom:40, opacity:0.15 }}>
+        <svg viewBox="0 0 340 40" style={{ width:"100%" }}>
+          <path d="M0,20 Q85,5 170,20 Q255,35 340,20" stroke={C.champagne} strokeWidth="1.5" fill="none"/>
+          <path d="M0,28 Q85,13 170,28 Q255,43 340,28" stroke={C.champagne} strokeWidth="0.8" fill="none"/>
+          <path d="M0,12 Q85,-3 170,12 Q255,27 340,12" stroke={C.blue} strokeWidth="0.6" fill="none"/>
+        </svg>
+      </div>
+
+      {/* Input card */}
+      <div style={{ width:"100%", maxWidth:340, background:"#111", border:`1px solid ${C.border}`, borderRadius:14, padding:28 }}>
+        <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:20, color:C.champagne, marginBottom:6 }}>Enter the Garage</div>
+        <div style={{ fontSize:12, color:C.dim, marginBottom:24, lineHeight:1.6 }}>New here? Pick a username and you're in. Been before? Just type yours and we'll find you.</div>
+
+        <div style={{ marginBottom:8 }}>
+          <div style={{ fontSize:11, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:6 }}>Username</div>
+          <input
+            value={username}
+            onChange={e => setUsername(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && handleSubmit()}
+            placeholder="e.g. scotty_cc"
+            autoFocus
+            style={{ width:"100%", background:"#0a0a0a", border:`1px solid ${error ? C.red : C.border}`, borderRadius:8, padding:"11px 14px", color:C.bone, fontSize:15, fontFamily:"'Josefin Sans', sans-serif", outline:"none", boxSizing:"border-box", letterSpacing:"0.04em" }}
+          />
+          {clean && clean !== username.trim() && (
+            <div style={{ fontSize:10, color:C.dim, marginTop:5 }}>Will be saved as: <span style={{ color:C.champagne }}>{clean}</span></div>
+          )}
+          {error && <div style={{ fontSize:11, color:C.red, marginTop:6 }}>{error}</div>}
+        </div>
+
+        <div style={{ fontSize:10, color:C.faint, marginBottom:20 }}>3–20 characters · letters, numbers, underscores only</div>
+
+        <button
+          onClick={handleSubmit}
+          disabled={clean.length < 3 || loading}
+          style={{ width:"100%", padding:"13px 0", background: clean.length >= 3 && !loading ? `linear-gradient(135deg, ${C.champagne}, ${C.champagneLight})` : "#1a1a1a", border:"none", borderRadius:8, color: clean.length >= 3 && !loading ? C.midnight : C.dim, fontFamily:"'Josefin Sans', sans-serif", fontSize:13, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.1em", cursor: clean.length >= 3 && !loading ? "pointer" : "not-allowed", transition:"all 0.2s" }}>
+          {loading ? "Finding your garage..." : "Enter the Garage →"}
+        </button>
+      </div>
+
+      <div style={{ marginTop:24, fontSize:10, color:"#2a2a2a", textAlign:"center", letterSpacing:"0.08em" }}>NO ADS · NO AUTO-RENEWAL · NO NONSENSE</div>
+    </div>
+  );
+};
+
 // ─── MAIN APP ─────────────────────────────────────────────────
 const App = () => {
   const [roads, setRoads] = useState(SEED_ROADS);
   const [trips, setTrips] = useState([]);
   const [pointsLog, setPointsLog] = useState([]);
-  const [currentUser, setCurrentUser] = useState({
-    id: "scott_cc", username: "scott_cc", displayName: "Scott",
-    location: "Mount Mellum, QLD", bio: "", avatar: null,
-    joinDate: "2026-03-01", points: 0, tier: "Explorer", garage: [],
-  });
+  const [currentUser, setCurrentUser] = useState(null);
   const [selected, setSelected] = useState(null);
   const [screen, setScreen] = useState("roads");
   const [showAddRoad, setShowAddRoad] = useState(false);
@@ -1364,48 +1428,84 @@ const App = () => {
   const [filterState, setFilterState] = useState("All");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [loginError, setLoginError] = useState("");
   const [apiError, setApiError] = useState(false);
 
-  // ── Bootstrap ──────────────────────────────────────────────
+  // ── Bootstrap — roads/trips only, no user assumed ──────────
   useEffect(() => {
     const init = async () => {
       try {
-        // Load roads
         const apiRoads = await api.getRoads();
         if (Array.isArray(apiRoads) && apiRoads.length > 0) {
           setRoads(apiRoads);
           setSelected(apiRoads[0]);
         } else {
-          for (const road of SEED_ROADS) {
-            await api.postRoad(road);
-          }
+          for (const road of SEED_ROADS) await api.postRoad(road);
           setSelected(SEED_ROADS[0]);
         }
-
-        // Load trips
         const apiTrips = await api.getTrips();
         if (Array.isArray(apiTrips)) setTrips(apiTrips);
-
-        // ── Load member + garage from KV — KV is sole source of truth ──
-        // FIX 3: load points from KV only; seed member has points:0 so no bleed
-        const profile = await api.getMember("scott_cc");
-        const garage  = await api.getGarage("scott_cc");
-        if (profile && !profile.error) {
-          const resolvedGarage = Array.isArray(garage) ? garage : [];
-          // Spread profile from KV — includes the real points value, not seed
-          setCurrentUser(prev => ({ ...prev, ...profile, garage: resolvedGarage }));
-        }
-
       } catch (err) {
-        console.error("API init failed — using local state", err);
+        console.error("API init failed", err);
         setApiError(true);
         setSelected(SEED_ROADS[0]);
       } finally {
         setLoading(false);
       }
     };
-    init();
+
+    // Check localStorage for returning user — skip login screen if found
+    const savedUsername = localStorage.getItem("cc_username");
+    if (savedUsername) {
+      loadUser(savedUsername).then(() => init());
+    } else {
+      init();
+    }
   }, []);
+
+  // ── Load user from KV — works for both new and returning ───
+  const loadUser = async (username) => {
+    const profile = await api.getMember(username);
+    const garage  = await api.getGarage(username);
+    if (profile && !profile.error) {
+      // Returning user — load from KV
+      const resolvedGarage = Array.isArray(garage) ? garage : [];
+      setCurrentUser({ ...profile, garage: resolvedGarage });
+    } else {
+      // New user — create in KV
+      const newMember = {
+        id: username, username, displayName: username,
+        location: "", bio: "", avatar: null,
+        joinDate: new Date().toISOString().slice(0, 10),
+        points: 0, tier: "Explorer", garage: [],
+        roadsAdded: [], reviewsWritten: 0, tripsPlanned: 0,
+      };
+      await api.postMember(newMember);
+      setCurrentUser(newMember);
+    }
+  };
+
+  // ── Handle login form submit ────────────────────────────────
+  const handleLogin = async (username) => {
+    setLoginLoading(true);
+    setLoginError("");
+    try {
+      await loadUser(username);
+      localStorage.setItem("cc_username", username);
+    } catch (err) {
+      setLoginError("Couldn't reach the garage. Check your connection and try again.");
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  // ── Sign out ────────────────────────────────────────────────
+  const handleSignOut = () => {
+    localStorage.removeItem("cc_username");
+    setCurrentUser(null);
+    setPointsLog([]);
+  };
 
   // ── Earn points ────────────────────────────────────────────
   const earnPoints = useCallback(async (action) => {
@@ -1446,21 +1546,24 @@ const App = () => {
 
   const tier = getTier(currentUser.points);
 
-  if (loading) return (
-    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100dvh", background:C.midnight, gap:16 }}>
-      <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:32, fontWeight:700, color:C.champagne }}>
-        Chasin<span style={{ color:C.red }}>'</span> Curves
+  // ── Show login screen if no user ───────────────────────────
+  if (!currentUser) {
+    if (loading) return (
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100dvh", background:C.midnight, gap:16 }}>
+        <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:32, fontWeight:700, color:C.champagne }}>
+          Chasin<span style={{ color:C.red }}>'</span> Curves
+        </div>
+        <div style={{ fontSize:10, color:"#444", letterSpacing:"0.18em", textTransform:"uppercase" }}>Roads, Rivers & Riffs</div>
+        <div style={{ marginTop:20, display:"flex", gap:6 }}>
+          {[0,1,2].map(i => (
+            <div key={i} style={{ width:8, height:8, borderRadius:"50%", background:C.champagne, opacity:0.3, animation:`pulse 1.2s ease-in-out ${i*0.2}s infinite` }} />
+          ))}
+        </div>
+        <style>{`@keyframes pulse { 0%,100%{opacity:0.3} 50%{opacity:1} }`}</style>
       </div>
-      <div style={{ fontSize:10, color:"#444", letterSpacing:"0.18em", textTransform:"uppercase" }}>Roads, Rivers & Riffs</div>
-      <div style={{ marginTop:20, display:"flex", gap:6 }}>
-        {[0,1,2].map(i => (
-          <div key={i} style={{ width:8, height:8, borderRadius:"50%", background:C.champagne, opacity:0.3, animation:`pulse 1.2s ease-in-out ${i*0.2}s infinite` }} />
-        ))}
-      </div>
-      <style>{`@keyframes pulse { 0%,100%{opacity:0.3} 50%{opacity:1} }`}</style>
-      {apiError && <div style={{ fontSize:11, color:C.dim, marginTop:8 }}>Loading local data...</div>}
-    </div>
-  );
+    );
+    return <LoginScreen onLogin={handleLogin} loading={loginLoading} error={loginError} />;
+  }
 
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100dvh", background:C.midnight, color:C.bone }}>
@@ -1474,12 +1577,15 @@ const App = () => {
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
           <PointsBadge pts={currentUser.points} />
-          <div onClick={() => setScreen("profile")} style={{ width:36, height:36, borderRadius:"50%", background:C.champagneDim, border:`2px solid ${C.champagne}`, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", overflow:"hidden" }}>
-            {currentUser.avatar
-              ? <img src={currentUser.avatar} style={{ width:"100%", height:"100%", objectFit:"cover" }} />
-              : <span style={{ fontSize:14, color:C.champagne, fontFamily:"'Cormorant Garamond', serif" }}>{currentUser.displayName[0]}</span>
-            }
+          <div style={{ position:"relative" }}>
+            <div onClick={() => setScreen("profile")} style={{ width:36, height:36, borderRadius:"50%", background:C.champagneDim, border:`2px solid ${C.champagne}`, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", overflow:"hidden" }}>
+              {currentUser.avatar
+                ? <img src={currentUser.avatar} style={{ width:"100%", height:"100%", objectFit:"cover" }} />
+                : <span style={{ fontSize:14, color:C.champagne, fontFamily:"'Cormorant Garamond', serif" }}>{currentUser.displayName[0]}</span>
+              }
+            </div>
           </div>
+          <button onClick={handleSignOut} title="Sign out" style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:6, padding:"4px 8px", color:C.dim, fontSize:10, cursor:"pointer", fontFamily:"'Josefin Sans', sans-serif", textTransform:"uppercase", letterSpacing:"0.06em" }}>Out</button>
         </div>
       </header>
 
