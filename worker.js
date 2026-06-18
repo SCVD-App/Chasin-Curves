@@ -19,6 +19,17 @@ function err(msg, status = 400) {
   return json({ error: msg }, status);
 }
 
+// Safely parse garage KV value — handles both raw array and legacy {garage:[]} wrapper
+function parseGarage(raw) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && Array.isArray(parsed.garage)) return parsed.garage;
+    return [];
+  } catch { return []; }
+}
+
 // ─── R2 public base URL ───────────────────────────────────────────────────────
 // Replace this with your actual R2 public bucket URL from the dashboard
 const R2_PUBLIC_BASE = 'https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev';
@@ -97,7 +108,7 @@ export default {
     // DELETE /garage/:id/photo/:photoId  ← check most-specific first
     if (garagePhotoDeleteMatch && method === 'DELETE') {
       const [, userId, photoId] = garagePhotoDeleteMatch;
-      const garage = JSON.parse(await env.CURVES_KV.get(`garage:${userId}`) || '[]');
+      const garage = parseGarage(await env.CURVES_KV.get(`garage:${userId}`));
 
       // Find which vehicle owns this photo and remove it
       let deleted = false;
@@ -143,7 +154,7 @@ export default {
 
       if (!file || !vehicleId) return err('Missing photo or vehicleId');
 
-      const garage = JSON.parse(await env.CURVES_KV.get(`garage:${userId}`) || '[]');
+      const garage = parseGarage(await env.CURVES_KV.get(`garage:${userId}`));
       const vehicle = garage.find(v => v.id === vehicleId);
       if (!vehicle) return err('Vehicle not found', 404);
 
@@ -182,7 +193,7 @@ export default {
       const id = garageMatch[1];
       if (method === 'GET') {
         const val = await env.CURVES_KV.get(`garage:${id}`);
-        return json(val ? JSON.parse(val) : []);
+        return json(parseGarage(val));
       }
       if (method === 'PUT') {
         const body = await request.json();
