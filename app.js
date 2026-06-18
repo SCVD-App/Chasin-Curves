@@ -1340,7 +1340,11 @@ const App = () => {
   const [roads, setRoads] = useState(SEED_ROADS);
   const [trips, setTrips] = useState([]);
   const [pointsLog, setPointsLog] = useState([]);
-  const [currentUser, setCurrentUser] = useState(SEED_MEMBERS[0]);
+  const [currentUser, setCurrentUser] = useState({
+    id: "scott_cc", username: "scott_cc", displayName: "Scott",
+    location: "Mount Mellum, QLD", bio: "", avatar: null,
+    joinDate: "2026-03-01", points: 0, tier: "Explorer", garage: [],
+  });
   const [selected, setSelected] = useState(null);
   const [screen, setScreen] = useState("roads");
   const [showAddRoad, setShowAddRoad] = useState(false);
@@ -1371,30 +1375,12 @@ const App = () => {
         const apiTrips = await api.getTrips();
         if (Array.isArray(apiTrips)) setTrips(apiTrips);
 
-        // ── Load member + garage (separate KV keys) ────────────
-        try {
-          const profile = await api.getMember("scott_cc");
-          const garage  = await api.getGarage("scott_cc");
-
-          if (profile && !profile.error) {
-            // Garage gets its own dedicated source of truth — never falls
-            // back to seed data once the member exists in KV
-            const resolvedGarage =
-              Array.isArray(garage) && garage.length > 0
-                ? garage
-                : (Array.isArray(profile.garage) && profile.garage.length > 0
-                    ? profile.garage
-                    : SEED_MEMBERS[0].garage);
-
-            setCurrentUser({ ...SEED_MEMBERS[0], ...profile, garage: resolvedGarage });
-          } else {
-            // First ever run — seed both member and garage
-            await api.postMember(SEED_MEMBERS[0]);
-            await api.saveGarage("scott_cc", SEED_MEMBERS[0].garage);
-          }
-        } catch {
-          await api.postMember(SEED_MEMBERS[0]);
-          await api.saveGarage("scott_cc", SEED_MEMBERS[0].garage);
+        // ── Load member + garage from KV — KV is source of truth ──
+        const profile = await api.getMember("scott_cc");
+        const garage  = await api.getGarage("scott_cc");
+        if (profile && !profile.error) {
+          const resolvedGarage = Array.isArray(garage) ? garage : [];
+          setCurrentUser(prev => ({ ...prev, ...profile, garage: resolvedGarage }));
         }
 
       } catch (err) {
