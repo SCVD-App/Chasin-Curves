@@ -1509,6 +1509,7 @@ const App = () => {
 
   // ── Earn points ────────────────────────────────────────────
   const earnPoints = useCallback(async (action) => {
+    if (!currentUser) return;
     const cfg = POINT_ACTIONS[action];
     if (!cfg) return;
     const entry = { action, earnedAt: new Date().toISOString(), points: cfg.points };
@@ -1531,20 +1532,19 @@ const App = () => {
 
   // ── Re-fetch garage from KV and sync into state ────────────
   const refreshGarage = useCallback(async () => {
+    if (!currentUser) return;
     try {
       const garage = await api.getGarage(currentUser.id);
       if (Array.isArray(garage)) {
         setCurrentUser(prev => ({ ...prev, garage }));
       }
     } catch {}
-  }, [currentUser.id]);
+  }, [currentUser?.id]);
 
   const states = ["All", ...Array.from(new Set(roads.map(r => r.state)))];
   const filteredRoads = roads
     .filter(r => filterState === "All" || r.state === filterState)
     .filter(r => !search || r.name.toLowerCase().includes(search.toLowerCase()) || r.region.toLowerCase().includes(search.toLowerCase()));
-
-  const tier = getTier(currentUser.points);
 
   // ── Show login screen if no user ───────────────────────────
   if (!currentUser) {
@@ -1564,6 +1564,9 @@ const App = () => {
     );
     return <LoginScreen onLogin={handleLogin} loading={loginLoading} error={loginError} />;
   }
+
+  // currentUser is guaranteed non-null from here down
+  const tier = getTier(currentUser.points);
 
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100dvh", background:C.midnight, color:C.bone }}>
