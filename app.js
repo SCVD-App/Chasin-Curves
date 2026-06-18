@@ -1,6 +1,6 @@
 // ============================================================
 // CHASIN' CURVES — app.js
-// Scott Claude Van Dam — v1.9
+// Scott Claude Van Dam — v2.0 — R2 photo storage
 // Fix: Garage now has dedicated KV key (garage:memberId)
 //      Vehicles persist correctly across reloads
 //      No more merge collision with seed data on init
@@ -556,20 +556,26 @@ const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh, onSelectVehic
     onUpdate({ ...member, garage: member.garage.map(v => ({ ...v, primary: v.id === id })) });
   };
 
-  const handleAvatarUpload = (vehicleId, e) => {
+  const handleAvatarUpload = async (vehicleId, e) => {
     const file = e.target.files[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => {
-      onUpdate({ ...member, garage: member.garage.map(v => v.id === vehicleId ? { ...v, avatar: ev.target.result } : v) });
+    const formData = new FormData();
+    formData.append("photo", file);
+    formData.append("vehicleId", vehicleId);
+    formData.append("setAsHero", "true");
+    try {
+      const res = await fetch(`${API}/garage/${member.id}/photo`, { method: "PUT", body: formData });
+      if (!res.ok) throw new Error("Upload failed");
       onPointsEarned("upload_photo");
-    };
-    reader.readAsDataURL(file);
+      if (onRefresh) await onRefresh();
+    } catch (err) {
+      alert(`Photo upload failed: ${err.message}`);
+    }
   };
 
   const primaryVehicle = member.garage.find(v => v.primary);
   const garageWallpaper = primaryVehicle?.photos?.length > 0
-    ? primaryVehicle.photos[primaryVehicle.heroPhoto || 0]
+    ? (primaryVehicle.photos[primaryVehicle.heroPhoto || 0]?.url || primaryVehicle.photos[0]?.url)
     : primaryVehicle?.avatar || null;
 
   return (
@@ -597,7 +603,7 @@ const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh, onSelectVehic
       )}
 
       {member.garage.map(v => {
-        const vHero = v.photos?.length > 0 ? v.photos[v.heroPhoto || 0] : v.avatar;
+        const vHero = v.photos?.length > 0 ? (v.photos[v.heroPhoto || 0]?.url || v.photos[0]?.url) : v.avatar;
         return (
           <div key={v.id} onClick={() => onSelectVehicle(v)}
             style={{ position: "relative", border: `1px solid ${v.primary ? C.champagne : C.border}`, borderRadius: 10, marginBottom: 12, overflow: "hidden", cursor: "pointer", minHeight: 90 }}>
@@ -660,8 +666,8 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
 
   const getHeroPhoto = () => {
     const photos = vehicle.photos || [];
-    if (typeof vehicle.heroPhoto === "number" && photos[vehicle.heroPhoto]) return photos[vehicle.heroPhoto];
-    if (photos.length > 0) return photos[0];
+    if (typeof vehicle.heroPhoto === "number" && photos[vehicle.heroPhoto]) return photos[vehicle.heroPhoto].url;
+    if (photos.length > 0) return photos[0].url;
     return vehicle.avatar || null;
   };
 
@@ -671,39 +677,57 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
     if (onRefresh) await onRefresh();
   };
 
-  const handleAddPhoto = (e) => {
+  const handleAddPhoto = async (e) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
     const existing = vehicle.photos || [];
     const slots = 10 - existing.length;
-    if (slots <= 0) return;
-    const toRead = files.slice(0, slots);
-    let loaded = [];
-    toRead.forEach(file => {
-      const reader = new FileReader();
-      reader.onload = ev => {
-        loaded.push(ev.target.result);
-        if (loaded.length === toRead.length) {
-          const photos = [...existing, ...loaded];
-          const heroPhoto = typeof vehicle.heroPhoto === "number" ? vehicle.heroPhoto : 0;
-          updateVehicle({ ...vehicle, photos, heroPhoto, avatar: photos[heroPhoto] });
-          onPointsEarned("upload_photo");
+    if (slots <= 0) { alert("Maximum 10 photos reached."); return; }
+    const toUpload = files.slice(0, slots);
+    setSaving(true);
+    try {
+      for (const file of toUpload) {
+        if (!file.type.startsWith("image/")) continue;
+        const formData = new FormData();
+        formData.append("photo", file);
+        formData.append("vehicleId", vehicle.id);
+        formData.append("setAsHero", String(existing.length === 0));
+        const res = await fetch(`${API}/garage/${currentUser.id}/photo`, {
+          method: "PUT",
+          body: formData,
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          throw new Error(d.error || `Upload failed (${res.status})`);
         }
-      };
-      reader.readAsDataURL(file);
-    });
+        onPointsEarned("upload_photo");
+      }
+      await onRefresh();
+    } catch (err) {
+      alert(`Photo upload failed: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const setHero = (idx) => {
+  const setHero = async (photoId) => {
     const photos = vehicle.photos || [];
-    updateVehicle({ ...vehicle, heroPhoto: idx, avatar: photos[idx] });
+    const idx = photos.findIndex(p => p.id === photoId);
+    updateVehicle({ ...vehicle, heroPhoto: idx, heroPhotoUrl: photos[idx]?.url });
   };
 
-  const deletePhoto = (idx) => {
-    const photos = (vehicle.photos || []).filter((_, i) => i !== idx);
-    let heroPhoto = vehicle.heroPhoto || 0;
-    if (heroPhoto >= photos.length) heroPhoto = photos.length > 0 ? 0 : null;
-    updateVehicle({ ...vehicle, photos, heroPhoto, avatar: photos.length > 0 ? photos[heroPhoto] : null });
+  const deletePhoto = async (photoId) => {
+    if (!confirm("Delete this photo?")) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`${API}/garage/${currentUser.id}/photo/${photoId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`Delete failed (${res.status})`);
+      await onRefresh();
+    } catch (err) {
+      alert(`Delete failed: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const hero = getHeroPhoto();
@@ -763,13 +787,13 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
             {photos.map((photo, idx) => (
-              <div key={idx} style={{ position: "relative", aspectRatio: "1", borderRadius: 8, overflow: "hidden", border: "2px solid " + (vehicle.heroPhoto === idx ? C.champagne : "transparent") }}>
-                <img src={photo} alt="" onClick={() => setFullscreen(idx)} style={{ width: "100%", height: "100%", objectFit: "cover", cursor: "pointer" }} />
-                <button onClick={() => setHero(idx)}
+              <div key={photo.id} style={{ position: "relative", aspectRatio: "1", borderRadius: 8, overflow: "hidden", border: "2px solid " + (vehicle.heroPhoto === idx ? C.champagne : "transparent") }}>
+                <img src={photo.url} alt="" onClick={() => setFullscreen(idx)} style={{ width: "100%", height: "100%", objectFit: "cover", cursor: "pointer" }} />
+                <button onClick={() => setHero(photo.id)}
                   style={{ position: "absolute", top: 4, left: 4, background: vehicle.heroPhoto === idx ? C.champagne : "rgba(0,0,0,0.6)", border: "none", borderRadius: "50%", width: 24, height: 24, fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                   ★
                 </button>
-                <button onClick={() => deletePhoto(idx)}
+                <button onClick={() => deletePhoto(photo.id)}
                   style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,0.6)", border: "none", borderRadius: "50%", width: 24, height: 24, fontSize: 12, cursor: "pointer", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
                   ✕
                 </button>
@@ -791,7 +815,7 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
 
       {fullscreen !== null && (
         <div onClick={() => setFullscreen(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.95)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <img src={photos[fullscreen]} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+          <img src={photos[fullscreen]?.url} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
           <button onClick={e => { e.stopPropagation(); setFullscreen(null); }}
             style={{ position: "absolute", top: 20, right: 20, background: "rgba(255,255,255,0.1)", border: "none", borderRadius: "50%", width: 36, height: 36, color: "#fff", fontSize: 18, cursor: "pointer" }}>✕</button>
           <div style={{ position: "absolute", bottom: 24, left: 0, right: 0, display: "flex", justifyContent: "center", gap: 8 }}>
