@@ -692,7 +692,7 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
         formData.append("photo", file);
         formData.append("vehicleId", vehicle.id);
         formData.append("setAsHero", String(existing.length === 0));
-        const res = await fetch(`${API}/garage/${currentUser.id}/photo`, {
+        const res = await fetch(`${API}/garage/${member.id}/photo`, {
           method: "PUT",
           body: formData,
         });
@@ -720,7 +720,7 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
     if (!confirm("Delete this photo?")) return;
     setSaving(true);
     try {
-      const res = await fetch(`${API}/garage/${currentUser.id}/photo/${photoId}`, { method: "DELETE" });
+      const res = await fetch(`${API}/garage/${member.id}/photo/${photoId}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`Delete failed (${res.status})`);
       await onRefresh();
     } catch (err) {
