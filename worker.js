@@ -1,6 +1,7 @@
-// Chasin' Curves — Worker v2.0
-// Session 4: R2 photo storage added
-// Endpoints: 16 total (added PUT /garage/:id/photo, DELETE /garage/:id/photo/:photoId)
+// Chasin' Curves — Worker v2.1
+// Session 5: heroPhoto now stored as photoId string (not array index)
+//            saveGarage now receives raw array (no {garage:[]} wrapper)
+// Endpoints: 16 total
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -19,19 +20,20 @@ function err(msg, status = 400) {
   return json({ error: msg }, status);
 }
 
-// Safely parse garage KV value — handles both raw array and legacy {garage:[]} wrapper
+// Safely parse garage KV value — handles raw array, legacy {garage:[]} wrapper,
+// and the erroneous {garage:{garage:[]}} double-wrap that could exist in KV
 function parseGarage(raw) {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) return parsed;
     if (parsed && Array.isArray(parsed.garage)) return parsed.garage;
+    // Double-wrap guard
+    if (parsed && parsed.garage && Array.isArray(parsed.garage.garage)) return parsed.garage.garage;
     return [];
   } catch { return []; }
 }
 
-// ─── R2 public base URL ───────────────────────────────────────────────────────
-// Replace this with your actual R2 public bucket URL from the dashboard
 const R2_PUBLIC_BASE = 'https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev';
 
 export default {
@@ -40,7 +42,6 @@ export default {
     const path = url.pathname;
     const method = request.method;
 
-    // CORS preflight
     if (method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: CORS });
     }
@@ -75,12 +76,12 @@ export default {
 
     // ── Member ─────────────────────────────────────────────────────────────────
     const memberMatch = path.match(/^\/member\/([^/]+)$/);
+
     if (path === '/member' && method === 'POST') {
       const body = await request.json();
       const existing = await env.CURVES_KV.get(`member:${body.id}`);
       if (existing) return err('Username taken', 409);
       await env.CURVES_KV.put(`member:${body.id}`, JSON.stringify(body));
-      // Create empty garage for new member
       await env.CURVES_KV.put(`garage:${body.id}`, JSON.stringify([]));
       return json({ ok: true });
     }
@@ -105,32 +106,30 @@ export default {
     const garagePhotoMatch = path.match(/^\/garage\/([^/]+)\/photo$/);
     const garagePhotoDeleteMatch = path.match(/^\/garage\/([^/]+)\/photo\/([^/]+)$/);
 
-    // DELETE /garage/:id/photo/:photoId  ← check most-specific first
+    // DELETE /garage/:id/photo/:photoId  ← most-specific first
     if (garagePhotoDeleteMatch && method === 'DELETE') {
       const [, userId, photoId] = garagePhotoDeleteMatch;
       const garage = parseGarage(await env.CURVES_KV.get(`garage:${userId}`));
 
-      // Find which vehicle owns this photo and remove it
       let deleted = false;
       for (const vehicle of garage) {
         const before = vehicle.photos ? vehicle.photos.length : 0;
         vehicle.photos = (vehicle.photos || []).filter(p => p.id !== photoId);
         if (vehicle.photos.length < before) {
           deleted = true;
-          // If this was the heroPhoto, clear it
+          // heroPhoto is now always a photoId string — clear it if this was the hero
           if (vehicle.heroPhoto === photoId) {
             vehicle.heroPhoto = vehicle.photos.length > 0 ? vehicle.photos[0].id : null;
+            vehicle.heroPhotoUrl = vehicle.photos.length > 0 ? vehicle.photos[0].url : null;
           }
         }
       }
 
       if (!deleted) return err('Photo not found', 404);
 
-      // Delete from R2
       try {
         await env.MEDIA_BUCKET.delete(photoId);
       } catch (e) {
-        // Log but don't fail — KV cleanup is more important
         console.error('R2 delete failed:', e);
       }
 
@@ -158,17 +157,13 @@ export default {
       const vehicle = garage.find(v => v.id === vehicleId);
       if (!vehicle) return err('Vehicle not found', 404);
 
-      // Check photo limit
       if ((vehicle.photos || []).length >= 10) {
         return err('Maximum 10 photos per vehicle');
       }
 
-      // Generate unique key for R2
       const ext = file.name ? file.name.split('.').pop().toLowerCase() : 'jpg';
       const photoId = `${userId}_${vehicleId}_${Date.now()}.${ext}`;
 
-      // Upload to R2
-      // Pixel phones use .MP extension — force image/jpeg if type missing or non-image
       const mimeType = (file.type && file.type.startsWith('image/')) ? file.type : 'image/jpeg';
       await env.MEDIA_BUCKET.put(photoId, file.stream(), {
         httpMetadata: { contentType: mimeType },
@@ -176,11 +171,10 @@ export default {
 
       const photoUrl = `${R2_PUBLIC_BASE}/${photoId}`;
 
-      // Add to vehicle photos array
       if (!vehicle.photos) vehicle.photos = [];
       vehicle.photos.push({ id: photoId, url: photoUrl, addedAt: Date.now() });
 
-      // Set as hero if flagged or if it's the first photo
+      // heroPhoto stored as photoId string — consistent with client and DELETE handler
       if (setAsHero || vehicle.photos.length === 1) {
         vehicle.heroPhoto = photoId;
         vehicle.heroPhotoUrl = photoUrl;
@@ -199,8 +193,9 @@ export default {
       }
       if (method === 'PUT') {
         const body = await request.json();
-        // Safety check — never allow base64 images in KV
-        const serialised = JSON.stringify(body);
+        // Accept raw array (new client) or {garage:[]} wrapper (legacy) — always store as raw array
+        const garage = Array.isArray(body) ? body : (Array.isArray(body.garage) ? body.garage : body);
+        const serialised = JSON.stringify(garage);
         if (serialised.length > 80000) {
           return err('Payload too large — use /garage/:id/photo for images', 413);
         }
