@@ -400,43 +400,122 @@ const PointsBadge = ({ pts, style: sx }) => {
 };
 
 // ─── MAP COMPONENT ───────────────────────────────────────────
+// v3.1: Mapbox foundation — real pan/zoom map replaces the hand-drawn SVG strip.
+// Get a public token from mapbox.com/account and paste it below, restricted
+// (Tokens → your token → URL restrictions) to your live domain before this
+// goes public — e.g. https://scvd-app.github.io/*
+// Brand styling is a first pass (paint-property overrides on dark-v11) —
+// worth a proper Mapbox Studio style later for a tighter match to the
+// Midnight/Champagne palette. Viewport-driven road list (replacing the
+// state filter buttons) is deliberately NOT in this pass — foundation only.
+const MAPBOX_TOKEN = "pk.eyJ1Ijoic2N2ZCIsImEiOiJjbXMzOHB1eXUwMzRjMzVvYm0ya29wYTZ1In0.FlTd5i3zPj5W7E57UaH5gw";
+
 const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
-  const toX = lng => Math.max(3, Math.min(95, ((lng - 136) / 20) * 100));
-  const toY = lat => Math.max(3, Math.min(95, ((lat + 45) / 25) * 100));
+  const mapContainer = useRef(null);
+  const mapRef = useRef(null);
+  const roadMarkersRef = useRef([]);
+  const tripMarkersRef = useRef([]);
+  const [mapReady, setMapReady] = useState(false);
+  const [mapFailed, setMapFailed] = useState(false);
+
+  // Init map once
+  useEffect(() => {
+    if (mapRef.current) return;
+    if (!window.mapboxgl || MAPBOX_TOKEN.includes("PASTE_YOUR")) {
+      setMapFailed(true);
+      return;
+    }
+    window.mapboxgl.accessToken = MAPBOX_TOKEN;
+    const map = new window.mapboxgl.Map({
+      container: mapContainer.current,
+      style: "mapbox://styles/mapbox/dark-v11",
+      center: [148, -30], // Eastern Australia
+      zoom: 4,
+      attributionControl: false,
+    });
+    map.addControl(new window.mapboxgl.NavigationControl({ showCompass: false }), "top-right");
+    map.addControl(new window.mapboxgl.AttributionControl({ compact: true }));
+
+    map.on("load", () => {
+      // Brand-tint pass — approximate only, refine via Mapbox Studio later.
+      // Layer IDs vary between style versions, so each is wrapped individually.
+      const tint = (layer, prop, value) => { try { map.setPaintProperty(layer, prop, value); } catch {} };
+      tint("water", "fill-color", "#0d1620");
+      tint("land", "background-color", C.midnight);
+      tint("national-park", "fill-color", "#12160f");
+
+      mapRef.current = map;
+      setMapReady(true);
+    });
+
+    map.on("error", () => setMapFailed(true));
+
+    return () => { map.remove(); mapRef.current = null; };
+  }, []);
+
+  // Road pin markers — rebuilt whenever roads or the selection changes
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    roadMarkersRef.current.forEach(m => m.remove());
+    roadMarkersRef.current = [];
+
+    roads.forEach(r => {
+      if (!r.startCoords) return;
+      const isSelected = selected?.id === r.id;
+      const el = document.createElement("div");
+      const size = isSelected ? 18 : 12;
+      el.style.cssText = `width:${size}px;height:${size}px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);cursor:pointer;transition:all .15s;background:${r.alerts?.length ? C.red : isSelected ? C.champagne : `${C.champagne}aa`};border:2px solid ${isSelected ? "#fff" : C.champagne};${isSelected ? `box-shadow:0 0 12px ${C.champagne}88;` : ""}`;
+      el.addEventListener("click", () => onSelect(r));
+
+      const marker = new window.mapboxgl.Marker({ element: el, anchor: "bottom" })
+        .setLngLat([r.startCoords.lng, r.startCoords.lat])
+        .addTo(map);
+      roadMarkersRef.current.push(marker);
+    });
+  }, [roads, selected, mapReady]);
+
+  // Trip vehicle-avatar markers — reuses the existing VehicleAvatar component
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    tripMarkersRef.current.forEach(({ marker, root }) => { root.unmount(); marker.remove(); });
+    tripMarkersRef.current = [];
+
+    trips.forEach(t => (t.routes || []).forEach(rid => {
+      const road = roads.find(r => r.id === rid);
+      if (!road?.startCoords) return;
+      const member = SEED_MEMBERS.find(m => m.id === t.createdBy);
+      const vehicle = member?.garage.find(v => v.id === t.vehicleId);
+      if (!vehicle) return;
+
+      const el = document.createElement("div");
+      const root = ReactDOM.createRoot(el);
+      root.render(<VehicleAvatar vehicle={vehicle} size={26} />);
+
+      const marker = new window.mapboxgl.Marker({ element: el, anchor: "center", offset: [14, -14] })
+        .setLngLat([road.startCoords.lng, road.startCoords.lat])
+        .addTo(map);
+      tripMarkersRef.current.push({ marker, root });
+    }));
+  }, [trips, roads, mapReady]);
 
   return (
     <div style={{ position: "relative", height: 220, background: "#0a0f14", borderBottom: `1px solid ${C.border}`, overflow: "hidden" }}>
-      <svg style={{ position: "absolute", inset: 0, opacity: 0.05 }} viewBox="0 0 800 220" preserveAspectRatio="none">
-        <path d="M0,110 Q100,60 200,100 Q300,140 400,80 Q500,30 600,90 Q700,140 800,70" stroke={C.champagne} strokeWidth="1" fill="none"/>
-        <path d="M0,130 Q150,70 300,120 Q450,170 600,100 Q700,60 800,110" stroke={C.champagne} strokeWidth="1" fill="none"/>
-        <path d="M0,150 Q200,90 350,140 Q500,190 650,120 Q750,80 800,130" stroke={C.champagne} strokeWidth="0.8" fill="none"/>
-        <path d="M0,80 Q180,30 360,70 Q540,110 720,50 Q780,30 800,60" stroke={C.blue} strokeWidth="0.7" fill="none" opacity="0.7"/>
-      </svg>
-      {[...Array(10)].map((_,i) => <div key={i} style={{ position:"absolute", left:`${(i+1)*9}%`, top:0, bottom:0, borderLeft:`1px solid #ffffff06` }}/>)}
-      {[...Array(6)].map((_,i) => <div key={i} style={{ position:"absolute", top:`${(i+1)*14}%`, left:0, right:0, borderTop:`1px solid #ffffff06` }}/>)}
-      <div style={{ position: "absolute", top: 10, left: 14, fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: "0.16em" }}>Eastern Australia</div>
-      {roads.map(r => {
-        const x = toX(r.startCoords.lng), y = toY(r.startCoords.lat);
-        const isSelected = selected?.id === r.id;
-        return (
-          <div key={r.id} onClick={() => onSelect(r)} style={{ position: "absolute", left: `${x}%`, top: `${y}%`, transform: "translate(-50%,-100%)", cursor: "pointer", zIndex: isSelected ? 10 : 5, transition: "all 0.2s" }}>
-            <div style={{ width: isSelected ? 16 : 11, height: isSelected ? 16 : 11, background: r.alerts?.length ? C.red : isSelected ? C.champagne : `${C.champagne}77`, border: `2px solid ${isSelected ? "#fff" : C.champagne}`, borderRadius: "50% 50% 50% 0", transform: "rotate(-45deg)", boxShadow: isSelected ? `0 0 12px ${C.champagne}88` : "none", transition: "all 0.2s" }} />
-          </div>
-        );
-      })}
-      {trips.map(t => t.routes.map(rid => {
-        const road = roads.find(r => r.id === rid);
-        if (!road) return null;
-        const x = toX(road.startCoords.lng), y = toY(road.startCoords.lat);
-        const member = SEED_MEMBERS.find(m => m.id === t.createdBy);
-        const vehicle = member?.garage.find(v => v.id === t.vehicleId);
-        return (
-          <div key={`${t.id}-${rid}`} style={{ position: "absolute", left: `${x + 2}%`, top: `${y - 2}%`, transform: "translate(-50%,-50%)", zIndex: 8 }}>
-            {vehicle && <VehicleAvatar vehicle={vehicle} size={24} />}
-          </div>
-        );
-      }))}
-      <div style={{ position: "absolute", bottom: 8, right: 14, display: "flex", gap: 10 }}>
+      <div ref={mapContainer} style={{ position: "absolute", inset: 0 }} />
+
+      {mapFailed && (
+        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 8, background: "#0a0f14" }}>
+          <div style={{ fontSize: 11, color: C.dim, textTransform: "uppercase", letterSpacing: "0.1em" }}>Map unavailable</div>
+          <div style={{ fontSize: 10, color: C.faint, maxWidth: 240, textAlign: "center", lineHeight: 1.6 }}>Check the Mapbox token in app.js is set and valid.</div>
+        </div>
+      )}
+
+      <div style={{ position: "absolute", top: 10, left: 14, fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: "0.16em", pointerEvents: "none" }}>Eastern Australia</div>
+
+      <div style={{ position: "absolute", bottom: 8, right: 14, display: "flex", gap: 10, pointerEvents: "none" }}>
         {[["QLD",C.champagne],["NSW",C.blue],["TAS","#888"],["VIC","#666"]].map(([s,c]) => (
           <span key={s} style={{ fontSize: 9, color: c, letterSpacing: "0.12em", textTransform: "uppercase" }}>{s}</span>
         ))}
