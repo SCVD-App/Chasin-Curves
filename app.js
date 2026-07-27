@@ -1323,7 +1323,7 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
 };
 
 // ─── ADD ROAD FORM ───────────────────────────────────────────
-const AddRoadModal = ({ onClose, onAdd, onPointsEarned }) => {
+const AddRoadModal = ({ onClose, onAdd, onPointsEarned, currentUser }) => {
   const [form, setForm] = useState({ name:"", region:"", state:"QLD", description:"", distance:"", duration:"", tags:"", startLat:"", startLng:"", endLat:"", endLng:"", busyTimes:"", fuel:"", food:"", meetups:"" });
   const [ratings, setRatings] = useState({ driveability:3, accessibility:3, views:3, surface:3, thrill:3 });
   const set = (k,v) => setForm(f=>({...f,[k]:v}));
@@ -1340,7 +1340,7 @@ const AddRoadModal = ({ onClose, onAdd, onPointsEarned }) => {
       food: form.food.split("\n").filter(Boolean),
       meetups: form.meetups.split("\n").filter(Boolean),
       ratings, reviews: 0, alerts: [], featured: false, verified: false,
-      addedBy: "scott_cc", addedDate: new Date().toISOString().slice(0,10),
+      addedBy: currentUser?.id || "unknown", addedDate: new Date().toISOString().slice(0,10),
     });
     onPointsEarned("add_road");
     onClose();
@@ -1838,6 +1838,7 @@ const App = () => {
       {showAddRoad && (
         <AddRoadModal
           onClose={() => setShowAddRoad(false)}
+          currentUser={currentUser}
           onAdd={async r => {
             try {
               const res = await api.postRoad(r);
