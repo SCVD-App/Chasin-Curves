@@ -84,6 +84,12 @@ const api = {
   getGarage: (id) => authedFetch(`${API}/garage/${id}`),
   saveGarage: (id, garage) => authedFetch(`${API}/garage/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(garage) }),
 
+  // ── Public member profile / Follows — session-authenticated (any member) ──
+  getMemberPublic: (id) => authedFetch(`${API}/members/${id}/public`),
+  getFollows: (id) => authedFetch(`${API}/follows?of=${encodeURIComponent(id)}`),
+  follow: (followedId) => authedFetch(`${API}/follows`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ followedId }) }),
+  unfollow: (followedId) => authedFetch(`${API}/follows`, { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ followedId }) }),
+
   getTrips: () => fetch(`${API}/trips`).then(r => r.json()),
   postTrip: (trip) => fetch(`${API}/trips`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(trip) }).then(r => r.json()),
   updateTrip: (id, updates) => fetch(`${API}/trips/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }).then(r => r.json()),
@@ -525,7 +531,7 @@ const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
 };
 
 // ─── ROAD DETAIL ─────────────────────────────────────────────
-const RoadDetail = ({ road, onClose, currentUser, onPointsEarned }) => {
+const RoadDetail = ({ road, onClose, currentUser, onPointsEarned, onOpenProfile }) => {
   const [tab, setTab] = useState("overview");
   const tabs = [["overview","Overview"],["ratings","Ratings"],["logistics","Logistics"],["alerts",`Alerts${road.alerts.length ? ` (${road.alerts.length})` : ""}`]];
 
@@ -546,6 +552,7 @@ const RoadDetail = ({ road, onClose, currentUser, onPointsEarned }) => {
             </div>
             <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, fontWeight: 700, color: C.bone, lineHeight: 1.1 }}>{road.name}</h3>
             <div style={{ fontSize: 11, color: C.dim, marginTop: 3, textTransform: "uppercase", letterSpacing: "0.1em" }}>{road.region}</div>
+            {road.addedBy && <div style={{ marginTop: 5 }}><AddedByLink memberId={road.addedBy} onOpen={onOpenProfile} /></div>}
           </div>
           <div style={{ textAlign: "right", flexShrink: 0 }}>
             <div style={{ fontSize: 20, fontFamily: "'Cormorant Garamond', serif", color: C.champagne, fontWeight: 600 }}>{avgRating(road).toFixed(1)}</div>
@@ -642,6 +649,138 @@ const RoadDetail = ({ road, onClose, currentUser, onPointsEarned }) => {
         )}
       </div>
     </div>
+  );
+};
+
+// ─── MEMBER PROFILE (public view — reached via "Added by" links) ─────
+// Shows only what /members/:id/public exposes: no email, bio, or garage.
+// Roads-added count is derived live from the roads already in app state
+// rather than member.roadsAdded, which the backend never actually
+// increments — see Session 13 handoff note.
+const MemberProfile = ({ memberId, currentUser, roads, onClose }) => {
+  const [profile, setProfile] = useState(null);
+  const [follows, setFollows] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const isSelf = memberId === currentUser?.id;
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setNotFound(false);
+    (async () => {
+      try {
+        const [p, f] = await Promise.all([
+          api.getMemberPublic(memberId),
+          api.getFollows(memberId),
+        ]);
+        if (!cancelled) { setProfile(p); setFollows(f); }
+      } catch (e) {
+        if (!cancelled) setNotFound(true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [memberId]);
+
+  const toggleFollow = async () => {
+    if (!follows || busy) return;
+    setBusy(true);
+    const wasFollowing = follows.viewerIsFollowing;
+    // Optimistic update — flip immediately, reconcile with server after.
+    setFollows(f => ({ ...f, viewerIsFollowing: !wasFollowing, followerCount: f.followerCount + (wasFollowing ? -1 : 1) }));
+    try {
+      if (wasFollowing) await api.unfollow(memberId);
+      else await api.follow(memberId);
+    } catch (e) {
+      // Revert on failure
+      setFollows(f => ({ ...f, viewerIsFollowing: wasFollowing, followerCount: f.followerCount + (wasFollowing ? 1 : -1) }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const roadsAdded = roads?.filter(r => r.addedBy === memberId) || [];
+
+  return (
+    <Modal title={notFound ? "Member" : (profile?.displayName || "Member")} onClose={onClose}>
+      {loading && <div style={{ textAlign:"center", padding:30, color:C.dim, fontSize:12 }}>Loading profile…</div>}
+
+      {!loading && notFound && (
+        <div style={{ textAlign:"center", padding:24, color:C.dim }}>
+          <div style={{ fontSize:28, marginBottom:8 }}>👤</div>
+          <div style={{ fontSize:13 }}>This member's profile isn't available.</div>
+        </div>
+      )}
+
+      {!loading && profile && (
+        <>
+          <div style={{ display:"flex", gap:14, alignItems:"center", marginBottom:16 }}>
+            <div style={{ width:56, height:56, borderRadius:"50%", background:C.champagneDim, border:`2px solid ${C.champagne}`, display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden", flexShrink:0 }}>
+              {profile.avatar
+                ? <img src={profile.avatar} style={{ width:"100%", height:"100%", objectFit:"cover" }} />
+                : <span style={{ fontSize:22, color:C.champagne, fontFamily:"'Cormorant Garamond', serif" }}>{profile.displayName[0]}</span>}
+            </div>
+            <div style={{ flex:1 }}>
+              <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:19, fontWeight:600, color:C.bone, lineHeight:1.1 }}>{profile.displayName}</div>
+              {profile.location && <div style={{ fontSize:11, color:C.dim, marginTop:2 }}>📍 {profile.location}</div>}
+              <div style={{ marginTop:6 }}><PointsBadge pts={profile.points} /></div>
+            </div>
+          </div>
+
+          {!isSelf && follows && (
+            <Btn onClick={toggleFollow} disabled={busy} variant={follows.viewerIsFollowing ? "ghost" : "primary"} style={{ width:"100%", marginBottom:16 }}>
+              {follows.viewerIsFollowing ? "Following ✓" : "+ Follow"}
+            </Btn>
+          )}
+
+          {follows && (
+            <div style={{ display:"flex", gap:20, marginBottom:16, padding:"10px 0", borderTop:`1px solid ${C.border}`, borderBottom:`1px solid ${C.border}` }}>
+              <div><span style={{ color:C.bone, fontWeight:600 }}>{follows.followerCount}</span> <span style={{ color:C.dim, fontSize:12 }}>followers</span></div>
+              <div><span style={{ color:C.bone, fontWeight:600 }}>{follows.followingCount}</span> <span style={{ color:C.dim, fontSize:12 }}>following</span></div>
+            </div>
+          )}
+
+          <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:15, color:C.champagne, marginBottom:10 }}>
+            Roads Added {roadsAdded.length > 0 && `(${roadsAdded.length})`}
+          </div>
+          {roadsAdded.length === 0
+            ? <div style={{ fontSize:12, color:C.dim, marginBottom:6 }}>No roads added yet.</div>
+            : roadsAdded.map(r => (
+                <div key={r.id} style={{ padding:"8px 0", borderBottom:`1px solid ${C.border}`, fontSize:13, color:"#ccc" }}>
+                  {r.name} <span style={{ color:C.dim, fontSize:11 }}>· {r.region}</span>
+                </div>
+              ))}
+        </>
+      )}
+    </Modal>
+  );
+};
+
+// Small clickable "Added by" line — reused wherever road attribution shows.
+// Never renders the raw id (it's an email post-auth-rebuild) — resolves a
+// display name first via /members/:id/public and shows a neutral
+// placeholder while that's in flight, rather than the address itself.
+const AddedByLink = ({ memberId, onOpen, style: sx }) => {
+  const [name, setName] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!memberId) return;
+    api.getMemberPublic(memberId).then(p => { if (!cancelled) setName(p.displayName); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [memberId]);
+
+  if (!memberId) return null;
+  return (
+    <span
+      onClick={(e) => { e.stopPropagation(); onOpen(memberId); }}
+      style={{ fontSize: 11, color: C.champagne, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2, ...sx }}
+    >
+      Added by {name || "a member"}
+    </span>
   );
 };
 
@@ -1587,6 +1726,7 @@ const App = () => {
   const [showAddRoad, setShowAddRoad] = useState(false);
   const [selectedVehicle, setSelectedVehicle] = useState(null);
   const [showRoadDetail, setShowRoadDetail] = useState(false);
+  const [viewingMemberId, setViewingMemberId] = useState(null);
   const [filterState, setFilterState] = useState("All");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -1866,7 +2006,7 @@ const App = () => {
               {selected.verified && <Badge color={C.blue}>✓ Verified</Badge>}
               {selected.alerts?.length > 0 && <span style={{ color:C.red, fontSize:14 }}>⚠</span>}
             </div>
-            <RoadDetail road={selected} onClose={() => setShowRoadDetail(false)} currentUser={currentUser} onPointsEarned={earnPoints} />
+            <RoadDetail road={selected} onClose={() => setShowRoadDetail(false)} currentUser={currentUser} onPointsEarned={earnPoints} onOpenProfile={setViewingMemberId} />
           </div>
         )}
 
@@ -1932,6 +2072,15 @@ const App = () => {
             }
           }}
           onPointsEarned={earnPoints}
+        />
+      )}
+
+      {viewingMemberId && (
+        <MemberProfile
+          memberId={viewingMemberId}
+          currentUser={currentUser}
+          roads={roads}
+          onClose={() => setViewingMemberId(null)}
         />
       )}
     </div>

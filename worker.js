@@ -1,9 +1,17 @@
-// Chasin' Curves — Worker v3.0
+// Chasin' Curves — Worker v3.1
 // Session 12: Email + 6-digit code auth replaces open username login.
 //             member/garage routes now require a valid session bound to the
 //             requester's own email — closes the "type anyone's username,
 //             become them" gap from v2.1.
-// Endpoints: 20 total
+// Session 13: Community roads — public member lookup + follow/unfollow.
+//             GET /members/:id/public exposes only a minimal public slice
+//             (never email/bio/garage) so road attribution can link to a
+//             profile without leaking private data. Any authed member can
+//             view any other member's public slice — this is deliberate,
+//             it's what makes "who added this road" clickable.
+//             Follows stored as a single array blob (same pattern as
+//             roads/trips), one row per {followerId, followedId} pair.
+// Endpoints: 24 total
 //
 // Secrets required in Cloudflare dashboard:
 //   RESEND_API_KEY   ← re_... from resend.com dashboard (already in use for Mic Drop)
@@ -267,6 +275,75 @@ export default {
         await env.CURVES_KV.put(`member:${id}`, JSON.stringify({ ...existing, ...body, id }));
         return json({ ok: true });
       }
+    }
+
+    // ── Member public profile — any authed member may view, never exposes
+    // email/bio/garage. This is what road attribution links to. ────────────
+    const memberPublicMatch = path.match(/^\/members\/([^/]+)\/public$/);
+    if (memberPublicMatch && method === 'GET') {
+      const id = cleanEmail(memberPublicMatch[1]);
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+
+      const raw = await env.CURVES_KV.get(`member:${id}`);
+      if (!raw) return err('Member not found', 404);
+      const m = JSON.parse(raw);
+
+      return json({
+        id: m.id,
+        displayName: m.displayName || 'Member',
+        avatar: m.avatar || null,
+        location: m.location || null,
+        joinDate: m.joinDate || null,
+        points: m.points || 0,
+        tripsPlanned: m.tripsPlanned || 0,
+      });
+    }
+
+    // ── Follows — one-way, no acceptance required. Stored as a single
+    // array blob: { followerId, followedId, createdAt }. ────────────────────
+    if (path === '/follows' && method === 'GET') {
+      const of = cleanEmail(url.searchParams.get('of') || '');
+      if (!of) return err('?of=email required');
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+
+      const follows = JSON.parse(await env.CURVES_KV.get('follows') || '[]');
+      const followerCount = follows.filter(f => f.followedId === of).length;
+      const followingCount = follows.filter(f => f.followerId === of).length;
+      const viewerIsFollowing = follows.some(f => f.followerId === authedEmail && f.followedId === of);
+
+      return json({ followerCount, followingCount, viewerIsFollowing });
+    }
+
+    if (path === '/follows' && method === 'POST') {
+      const body = await request.json();
+      const followedId = cleanEmail(body.followedId);
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+      if (!followedId) return err('followedId required');
+      if (followedId === authedEmail) return err("Can't follow yourself");
+
+      const follows = JSON.parse(await env.CURVES_KV.get('follows') || '[]');
+      const exists = follows.some(f => f.followerId === authedEmail && f.followedId === followedId);
+      if (!exists) {
+        follows.push({ followerId: authedEmail, followedId, createdAt: Date.now() });
+        await env.CURVES_KV.put('follows', JSON.stringify(follows));
+      }
+      return json({ ok: true });
+    }
+
+    if (path === '/follows' && method === 'DELETE') {
+      const body = await request.json();
+      const followedId = cleanEmail(body.followedId);
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+      if (!followedId) return err('followedId required');
+
+      const follows = JSON.parse(await env.CURVES_KV.get('follows') || '[]');
+      const filtered = follows.filter(f => !(f.followerId === authedEmail && f.followedId === followedId));
+      await env.CURVES_KV.put('follows', JSON.stringify(filtered));
+      return json({ ok: true });
     }
 
     // ── Garage — requires a session bound to the same email as :id ──────────
