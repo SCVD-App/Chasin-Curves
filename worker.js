@@ -11,7 +11,19 @@
 //             it's what makes "who added this road" clickable.
 //             Follows stored as a single array blob (same pattern as
 //             roads/trips), one row per {followerId, followedId} pair.
-// Endpoints: 24 total
+// Session 14: Logbook (Murphy Report & Logbook compliance feature, phase 1
+//             of the master build plan — general-use day-cap logging only,
+//             club events land later once a pilot partner club exists).
+//             GET/POST /logbook/:id — Use Entry records, same session-owner
+//             -only pattern as /garage. `timestamp` is always server-set to
+//             Date.now() and a client-supplied value is ignored outright —
+//             this is what makes VIC Reg 157(6)'s forward-dating ban (and
+//             backdating generally) structurally impossible rather than a
+//             UI convention. PUT /logbook/:id/:entryId is the one exception
+//             to "entries are immutable": it lets a later return-odometer
+//             reading be attached, nothing else about a filed entry can be
+//             changed after the fact.
+// Endpoints: 27 total
 //
 // Secrets required in Cloudflare dashboard:
 //   RESEND_API_KEY   ← re_... from resend.com dashboard (already in use for Mic Drop)
@@ -455,6 +467,76 @@ export default {
         }
         await env.CURVES_KV.put(`garage:${id}`, serialised);
         return json({ ok: true });
+      }
+    }
+
+    // ── Logbook (Use Entries) — requires a session bound to the same email
+    // as :id, same isolation pattern as /garage. Phase 1 of the Murphy
+    // Report & Logbook feature: general_use entries only. Club-event entry
+    // types (club_event / impromptu_event) and the partner_club_id field
+    // land with the Murphy Report build once a pilot club is lined up —
+    // see chasin-curves/murphy-report-logbook.md. ──────────────────────────
+    const logbookMatch = path.match(/^\/logbook\/([^/]+)$/);
+    const logbookEntryMatch = path.match(/^\/logbook\/([^/]+)\/([^/]+)$/);
+
+    // PUT /logbook/:id/:entryId — the ONE mutation a filed entry ever gets:
+    // attaching a return odometer reading captured after the trip. Nothing
+    // else (timestamp, odometer_start, vehicleId) can be changed once an
+    // entry exists — that immutability is the actual compliance feature.
+    if (logbookEntryMatch && method === 'PUT') {
+      const userId = cleanEmail(logbookEntryMatch[1]);
+      const entryId = logbookEntryMatch[2];
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+      if (authedEmail !== userId) return err('Forbidden', 403);
+
+      const body = await request.json();
+      if (typeof body.odometerEnd !== 'number') return err('odometerEnd (number) required');
+
+      const entries = JSON.parse(await env.CURVES_KV.get(`logbook:${userId}`) || '[]');
+      const idx = entries.findIndex(e => e.id === entryId);
+      if (idx === -1) return err('Entry not found', 404);
+      if (body.odometerEnd < entries[idx].odometerStart) {
+        return err("Return odometer can't be less than the start reading");
+      }
+      entries[idx].odometerEnd = body.odometerEnd;
+      await env.CURVES_KV.put(`logbook:${userId}`, JSON.stringify(entries));
+      return json({ ok: true });
+    }
+
+    // GET /logbook/:id  and  POST /logbook/:id
+    if (logbookMatch) {
+      const id = cleanEmail(logbookMatch[1]);
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+      if (authedEmail !== id) return err('Forbidden', 403);
+
+      if (method === 'GET') {
+        const val = await env.CURVES_KV.get(`logbook:${id}`);
+        return json(val ? JSON.parse(val) : []);
+      }
+      if (method === 'POST') {
+        const body = await request.json();
+        if (!body.vehicleId) return err('vehicleId required');
+        if (typeof body.odometerStart !== 'number') return err('odometerStart (number) required');
+
+        const entries = JSON.parse(await env.CURVES_KV.get(`logbook:${id}`) || '[]');
+        const entry = {
+          id: `u${Date.now()}${Math.floor(Math.random() * 1000)}`,
+          vehicleId: body.vehicleId,
+          // Only general_use exists in this build — club_event/impromptu_event
+          // arrive with the Murphy Report phase (needs a partner club first).
+          entryType: 'general_use',
+          // Server-stamped, always "now" — a client-supplied timestamp is
+          // never read, let alone trusted. This is the data-layer enforcement
+          // of "no forward-dating, no backdating" from the spec.
+          timestamp: Date.now(),
+          odometerStart: body.odometerStart,
+          odometerEnd: null,
+        };
+        entries.push(entry);
+        await env.CURVES_KV.put(`logbook:${id}`, JSON.stringify(entries));
+        return json({ ok: true, entry });
       }
     }
 

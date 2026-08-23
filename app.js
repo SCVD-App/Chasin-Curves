@@ -90,6 +90,11 @@ const api = {
   follow: (followedId) => authedFetch(`${API}/follows`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ followedId }) }),
   unfollow: (followedId) => authedFetch(`${API}/follows`, { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ followedId }) }),
 
+  // ── Logbook — session-authenticated, session-owner-only (same as garage) ──
+  getLogbook: (id) => authedFetch(`${API}/logbook/${id}`),
+  postLogEntry: (id, entry) => authedFetch(`${API}/logbook/${id}`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(entry) }),
+  addReturnOdometer: (id, entryId, odometerEnd) => authedFetch(`${API}/logbook/${id}/${entryId}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ odometerEnd }) }),
+
   getTrips: () => fetch(`${API}/trips`).then(r => r.json()),
   postTrip: (trip) => fetch(`${API}/trips`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(trip) }).then(r => r.json()),
   updateTrip: (id, updates) => fetch(`${API}/trips/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }).then(r => r.json()),
@@ -260,6 +265,48 @@ const POINT_ACTIONS = {
   add_vehicle: { points: 50, label: "Vehicle Added", icon: "🚗" },
   report_alert: { points: 25, label: "Alert Reported", icon: "⚠️" },
   daily_login: { points: 5, label: "Daily Login", icon: "🔑" },
+  log_trip: { points: 5, label: "Trip Logged", icon: "📋" },
+};
+
+// ─── LOGBOOK / DAY-CAP CONFIG ────────────────────────────────
+// Murphy Report & Logbook spec, 21 Aug 2026 — phase 1 (Logbook only, per
+// the master build plan): general-use day-cap tracking, no club events yet.
+//
+// QLD/WA run on the event-attendance model — no day cap exists at all, so
+// they're deliberately absent from the cap tables below. VIC/SA/TAS are
+// pure day-cap. NSW/ACT/NT are hybrid (day cap + separate unlimited club
+// events) but only the day-cap half is built this phase.
+// TAS/NT exact caps weren't confirmed in the research pass (open item in
+// the spec) — also absent, so those vehicles just log entries with no cap
+// bar shown until the real numbers are confirmed, rather than guessing.
+const REGO_STATES = ["QLD", "NSW", "VIC", "SA", "WA", "TAS", "ACT", "NT"];
+const NO_CAP_STATES = ["QLD", "WA"];
+const FIXED_DAY_CAPS = { NSW: 60, ACT: 60, SA: 90 }; // VIC is vehicle-specific, see below
+const VIC_DAY_CAP_OPTIONS = [45, 90];
+
+// VIC registers a vehicle against 45 OR 90 days, owner's choice — stored
+// per-vehicle as vicDayCap, defaulting to the more common 90 if unset.
+const dayCapFor = vehicle => {
+  if (!vehicle?.regoState) return null;
+  if (vehicle.regoState === "VIC") return vehicle.vicDayCap || 90;
+  return FIXED_DAY_CAPS[vehicle.regoState] || null;
+};
+
+// Rolling 365-day trailing window rather than a rego-anniversary-anchored
+// year — simplest correct read of "day-count per vehicle per registration
+// year" without needing an extra rego-renewal-date field. Flagging the
+// assumption here in case a state's fine print turns out to anchor the
+// count to a fixed rego date instead of a rolling window — worth
+// confirming before this is relied on for an actual roadside stop.
+const ROLLING_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
+const rollingDayCount = (entries, vehicleId) => {
+  const cutoff = Date.now() - ROLLING_WINDOW_MS;
+  const days = new Set(
+    (entries || [])
+      .filter(e => e.vehicleId === vehicleId && e.entryType === "general_use" && e.timestamp >= cutoff)
+      .map(e => new Date(e.timestamp).toDateString())
+  );
+  return days.size;
 };
 
 const TIERS = [
@@ -315,6 +362,37 @@ const Input = ({ label, value, onChange, placeholder, type = "text", multiline, 
         ? <textarea value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} rows={rows} style={{ ...inputStyle, resize: "vertical", ...sx }} />
         : <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} style={{ ...inputStyle, ...sx }} />
       }
+    </div>
+  );
+};
+
+// Registration state + (for VIC) chosen day-cap scheme — this is what lets
+// the Logbook work out which cap, if any, applies to a vehicle. Shared
+// between the Add Vehicle form and the VehicleDetail edit block so existing
+// vehicles (added before this field existed) can be brought up to date.
+const RegoStateField = ({ vehicle, onChange }) => {
+  const selectStyle = {
+    width: "100%", background: "#0f0f0f", border: `1px solid ${C.border}`,
+    borderRadius: 6, padding: "8px 12px", color: C.bone, fontSize: 13,
+    fontFamily: "'Josefin Sans', sans-serif", outline: "none",
+  };
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>Registration State</div>
+      <select value={vehicle.regoState || ""} onChange={e => onChange({ regoState: e.target.value })} style={selectStyle}>
+        <option value="">Not set — Logbook won't track a day cap yet</option>
+        {REGO_STATES.map(s => <option key={s} value={s}>{s}{NO_CAP_STATES.includes(s) ? " — event-based, no day cap" : ""}</option>)}
+      </select>
+      {vehicle.regoState === "VIC" && (
+        <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+          {VIC_DAY_CAP_OPTIONS.map(days => (
+            <button key={days} type="button" onClick={() => onChange({ vicDayCap: days })}
+              style={{ flex: 1, padding: "7px 0", borderRadius: 6, border: "1px solid", borderColor: (vehicle.vicDayCap || 90) === days ? C.champagne : C.border2, background: (vehicle.vicDayCap || 90) === days ? C.champagneDim : "none", color: (vehicle.vicDayCap || 90) === days ? C.champagne : C.dim, fontSize: 11, cursor: "pointer", textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: "'Josefin Sans', sans-serif" }}>
+              {days}-day scheme
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
@@ -788,7 +866,7 @@ const AddedByLink = ({ memberId, onOpen, style: sx }) => {
 const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh, onSelectVehicle }) => {
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ make: "", model: "", year: "", variant: "", colour: "", notes: "" });
+  const [form, setForm] = useState({ make: "", model: "", year: "", variant: "", colour: "", notes: "", regoState: "", vicDayCap: 90 });
   const fileInputRefs = useRef({});
 
   const triggerFileInput = (vehicleId) => {
@@ -804,7 +882,7 @@ const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh, onSelectVehic
     const v = { id: `v${Date.now()}`, ...form, avatar: null, primary: member.garage.length === 0 };
     await onUpdate({ ...member, garage: [...member.garage, v] });
     onPointsEarned("add_vehicle");
-    setForm({ make: "", model: "", year: "", variant: "", colour: "", notes: "" });
+    setForm({ make: "", model: "", year: "", variant: "", colour: "", notes: "", regoState: "", vicDayCap: 90 });
     setShowAdd(false);
     setSaving(false);
     if (onRefresh) await onRefresh();
@@ -910,6 +988,7 @@ const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh, onSelectVehic
           </div>
           <Input label="Variant / Spec" value={form.variant} onChange={v => setForm(f => ({...f, variant: v}))} placeholder="E85 3.0i Roadster" />
           <Input label="Notes" value={form.notes} onChange={v => setForm(f => ({...f, notes: v}))} placeholder="Any notes about this vehicle..." multiline />
+          <RegoStateField vehicle={form} onChange={patch => setForm(f => ({...f, ...patch}))} />
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <Btn variant="ghost" onClick={() => setShowAdd(false)} style={{ flex: 1 }}>Cancel</Btn>
             <Btn onClick={handleAdd} disabled={saving} style={{ flex: 2 }}>{saving ? "Saving..." : "Add to Garage"}</Btn>
@@ -1084,6 +1163,11 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
               <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{vehicle.notes}</div>
             </div>
           )}
+
+          <div style={{ marginTop: 20, padding: 14, background: "#0a0a0a", borderRadius: 8, border: "1px solid " + C.border }}>
+            <div style={{ fontSize: 10, color: C.champagne, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 10 }}>Registration (for Logbook day-cap tracking)</div>
+            <RegoStateField vehicle={vehicle} onChange={patch => updateVehicle({ ...vehicle, ...patch })} />
+          </div>
         </div>
       )}
 
@@ -1099,6 +1183,207 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
             ))}
           </div>
         </div>
+      )}
+    </div>
+  );
+};
+
+// ─── LOGBOOK ─────────────────────────────────────────────────
+// Phase 1 of the Murphy Report & Logbook feature (master build plan,
+// 22 Aug 2026) — general-use day-cap logging only. Deliberately no
+// club-event branch here: that arrives with the Murphy Report once a
+// pilot partner club exists, per the recommended build sequencing.
+
+const lastOdometerForVehicle = (entries, vehicleId) => {
+  const relevant = (entries || []).filter(e => e.vehicleId === vehicleId);
+  if (relevant.length === 0) return null;
+  return relevant.reduce((max, e) => Math.max(max, e.odometerEnd ?? e.odometerStart), 0);
+};
+
+const LogTripModal = ({ member, logbook, onClose, onSubmit }) => {
+  const garage = member.garage || [];
+  const primaryVehicle = garage.find(v => v.primary) || garage[0];
+  const [vehicleId, setVehicleId] = useState(primaryVehicle?.id || "");
+  const [odometer, setOdometer] = useState("");
+  const [saving, setSaving] = useState(false);
+  const vehicle = garage.find(v => v.id === vehicleId);
+  const lastReading = vehicle ? lastOdometerForVehicle(logbook, vehicle.id) : null;
+
+  // Smart-default the odometer to the vehicle's last logged reading —
+  // re-runs whenever the selected vehicle changes, editable either way.
+  useEffect(() => {
+    const lr = vehicle ? lastOdometerForVehicle(logbook, vehicle.id) : null;
+    setOdometer(lr != null ? String(lr) : "");
+  }, [vehicleId]);
+
+  const selectStyle = { width:"100%", background:"#0f0f0f", border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 12px", color:C.bone, fontSize:13, fontFamily:"'Josefin Sans', sans-serif", outline:"none" };
+
+  const handleSubmit = async () => {
+    if (!vehicle) { alert("Select a vehicle first."); return; }
+    const reading = Number(odometer);
+    if (odometer === "" || Number.isNaN(reading) || reading < 0) { alert("Enter a valid odometer reading."); return; }
+    // Catches typos before they end up in a report that might be shown to
+    // police — flags, doesn't block, since a genuinely lower reading
+    // (odometer replaced, etc.) is rare but real.
+    if (lastReading != null && reading < lastReading) {
+      const proceed = confirm(`This reading (${reading}) is lower than the last logged odometer for this vehicle (${lastReading}). Log it anyway?`);
+      if (!proceed) return;
+    }
+    setSaving(true);
+    try {
+      await onSubmit(vehicle.id, reading);
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="Log a Trip" subtitle="Timestamp is captured now, automatically — there's no date field to fill in" onClose={onClose}>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>Vehicle</div>
+        <select value={vehicleId} onChange={e => setVehicleId(e.target.value)} style={selectStyle}>
+          <option value="" disabled>Select a vehicle</option>
+          {garage.map(v => <option key={v.id} value={v.id}>{v.year} {v.make} {v.model}</option>)}
+        </select>
+      </div>
+      <Input label="Odometer" type="number" value={odometer} onChange={setOdometer} placeholder="e.g. 84210" />
+      {vehicle && !vehicle.regoState && (
+        <div style={{ fontSize: 11, color: C.dim, marginBottom: 14, lineHeight: 1.5 }}>
+          No registration state set for this vehicle — the entry will still be logged, but day-cap tracking won't show until you set one in the Garage.
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+        <Btn variant="ghost" onClick={onClose} style={{ flex: 1 }}>Cancel</Btn>
+        <Btn onClick={handleSubmit} disabled={saving || !vehicle} style={{ flex: 2 }}>{saving ? "Logging..." : "Log Trip Now"}</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+const VehicleDayCapCard = ({ vehicle, logbook }) => {
+  const cap = dayCapFor(vehicle);
+  const used = rollingDayCount(logbook, vehicle.id);
+  const label = `${vehicle.year} ${vehicle.make} ${vehicle.model}`;
+
+  if (!vehicle.regoState) {
+    return (
+      <div style={{ padding: 12, borderRadius: 8, border: `1px dashed ${C.border2}`, marginBottom: 10 }}>
+        <div style={{ fontSize: 13, color: C.bone, marginBottom: 2 }}>{label}</div>
+        <div style={{ fontSize: 11, color: C.dim }}>No registration state set — open this vehicle in the Garage to enable day-cap tracking.</div>
+      </div>
+    );
+  }
+  if (NO_CAP_STATES.includes(vehicle.regoState)) {
+    return (
+      <div style={{ padding: 12, borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 10 }}>
+        <div style={{ fontSize: 13, color: C.bone, marginBottom: 2 }}>{label} · {vehicle.regoState}</div>
+        <div style={{ fontSize: 11, color: C.dim }}>{vehicle.regoState} runs on club-event attendance, not a day cap — that side of the compliance feature lands with Murphy Report once a partner club is in place.</div>
+      </div>
+    );
+  }
+  if (!cap) {
+    return (
+      <div style={{ padding: 12, borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 10 }}>
+        <div style={{ fontSize: 13, color: C.bone, marginBottom: 2 }}>{label} · {vehicle.regoState}</div>
+        <div style={{ fontSize: 11, color: C.dim }}>Exact day cap for {vehicle.regoState} isn't confirmed yet — entries are still being logged in the meantime.</div>
+      </div>
+    );
+  }
+  const over = used >= cap;
+  return (
+    <div style={{ padding: 12, borderRadius: 8, border: `1px solid ${over ? C.red : C.border}`, marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+        <div style={{ fontSize: 13, color: C.bone }}>{label} · {vehicle.regoState}</div>
+        <div style={{ fontSize: 12, color: over ? C.red : C.champagne, fontWeight: 700 }}>{used}/{cap} days</div>
+      </div>
+      <div style={{ height: 3, background: "#1e1e1e", borderRadius: 2 }}>
+        <div style={{ height: "100%", width: `${Math.min(100, (used / cap) * 100)}%`, background: over ? C.red : `linear-gradient(90deg, ${C.champagne}, ${C.champagneLight})`, borderRadius: 2 }} />
+      </div>
+      <div style={{ fontSize: 10, color: C.dim, marginTop: 5 }}>Rolling 365-day count, not a fixed calendar year — cross-check against your actual rego period</div>
+    </div>
+  );
+};
+
+const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPointsEarned }) => {
+  const [showLog, setShowLog] = useState(false);
+  const garage = member.garage || [];
+  const sorted = [...(logbook || [])].sort((a, b) => b.timestamp - a.timestamp);
+
+  const vehicleName = id => {
+    const v = garage.find(veh => veh.id === id);
+    return v ? `${v.year} ${v.make} ${v.model}` : "Unknown vehicle";
+  };
+
+  const handleSubmit = async (vehicleId, odometerStart) => {
+    await onLogEntry(vehicleId, odometerStart);
+    onPointsEarned("log_trip");
+  };
+
+  const handleReturnOdo = (entry) => {
+    const val = prompt("Return odometer reading?");
+    if (val === null) return;
+    const n = Number(val);
+    if (val.trim() === "" || Number.isNaN(n) || n < entry.odometerStart) {
+      alert("Enter a number no lower than the start reading.");
+      return;
+    }
+    onAddReturnOdometer(entry.id, n);
+  };
+
+  return (
+    <div style={{ padding: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+        <div>
+          <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, color: C.champagne }}>Logbook</div>
+          <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>Same-day entries only — timestamp is captured automatically.</div>
+        </div>
+        <Btn size="sm" onClick={() => setShowLog(true)} disabled={garage.length === 0}>+ Log a Trip</Btn>
+      </div>
+
+      {garage.length === 0 && (
+        <div style={{ textAlign: "center", padding: 40, color: C.dim }}>
+          <div style={{ fontSize: 32, marginBottom: 10 }}>📋</div>
+          <div>Add a vehicle to the Garage before logging a trip.</div>
+        </div>
+      )}
+
+      {garage.length > 0 && (
+        <div style={{ marginTop: 18, marginBottom: 8 }}>
+          {garage.map(v => <VehicleDayCapCard key={v.id} vehicle={v} logbook={logbook} />)}
+        </div>
+      )}
+
+      {sorted.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Entries</div>
+          {sorted.map(e => (
+            <div key={e.id} style={{ padding: "12px 14px", borderBottom: `1px solid #151515`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, color: C.bone }}>{vehicleName(e.vehicleId)}</div>
+                <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>
+                  {new Date(e.timestamp).toLocaleString('en-AU', { day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit' })}
+                </div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                  Odo {e.odometerStart}{e.odometerEnd != null ? ` → ${e.odometerEnd}` : ""}
+                </div>
+              </div>
+              {e.odometerEnd == null && (
+                <Btn size="sm" variant="ghost" onClick={() => handleReturnOdo(e)}>+ Return Odo</Btn>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {sorted.length === 0 && garage.length > 0 && (
+        <div style={{ textAlign: "center", padding: "30px 20px", color: C.dim }}>
+          <div style={{ fontSize: 12 }}>No entries yet. Log a trip before you head out.</div>
+        </div>
+      )}
+
+      {showLog && (
+        <LogTripModal member={member} logbook={logbook} onClose={() => setShowLog(false)} onSubmit={handleSubmit} />
       )}
     </div>
   );
@@ -1720,6 +2005,7 @@ const App = () => {
   const [roads, setRoads] = useState(SEED_ROADS);
   const [trips, setTrips] = useState([]);
   const [pointsLog, setPointsLog] = useState([]);
+  const [logbook, setLogbook] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
   const [selected, setSelected] = useState(null);
   const [screen, setScreen] = useState("roads");
@@ -1739,6 +2025,7 @@ const App = () => {
     clearSession();
     setCurrentUser(null);
     setPointsLog([]);
+    setLogbook([]);
     setLoginStep("email");
   }, []);
 
@@ -1784,6 +2071,10 @@ const App = () => {
     const garage  = await api.getGarage(email);
     const resolvedGarage = Array.isArray(garage) ? garage : [];
     setCurrentUser({ ...profile, garage: resolvedGarage });
+    try {
+      const entries = await api.getLogbook(email);
+      if (Array.isArray(entries)) setLogbook(entries);
+    } catch (e) { if (e?.authFailed) throw e; /* non-fatal otherwise — logbook just starts empty */ }
   };
 
   // ── Step 1: request a code sent to email ────────────────────
@@ -1876,6 +2167,29 @@ const App = () => {
       }
     } catch (e) { if (e?.authFailed) handleSignOut(); }
   }, [currentUser?.id, handleSignOut]);
+
+  // ── Logbook — log a trip / attach a return odometer reading ─
+  const handleLogTrip = useCallback(async (vehicleId, odometerStart) => {
+    if (!currentUser) return;
+    try {
+      const res = await api.postLogEntry(currentUser.id, { vehicleId, odometerStart });
+      if (res?.entry) setLogbook(prev => [...prev, res.entry]);
+    } catch (e) {
+      if (e?.authFailed) handleSignOut();
+      else alert(`Couldn't log the trip: ${e.message}`);
+    }
+  }, [currentUser, handleSignOut]);
+
+  const handleAddReturnOdometer = useCallback(async (entryId, odometerEnd) => {
+    if (!currentUser) return;
+    try {
+      await api.addReturnOdometer(currentUser.id, entryId, odometerEnd);
+      setLogbook(prev => prev.map(e => e.id === entryId ? { ...e, odometerEnd } : e));
+    } catch (e) {
+      if (e?.authFailed) handleSignOut();
+      else alert(`Couldn't save the return odometer: ${e.message}`);
+    }
+  }, [currentUser, handleSignOut]);
 
   const states = ["All", ...Array.from(new Set(roads.map(r => r.state)))];
   const filteredRoads = roads
@@ -2032,6 +2346,12 @@ const App = () => {
           </div>
         )}
 
+        {screen === "logbook" && (
+          <div style={{ flex:1, overflowY:"auto" }}>
+            <LogbookView member={currentUser} logbook={logbook} onLogEntry={handleLogTrip} onAddReturnOdometer={handleAddReturnOdometer} onPointsEarned={earnPoints} />
+          </div>
+        )}
+
         {screen === "profile" && (
           <div style={{ flex:1, overflowY:"auto" }}>
             <ProfileView member={currentUser} onUpdate={updateCurrentUser} pointsLog={pointsLog} />
@@ -2044,6 +2364,7 @@ const App = () => {
           { id:"roads", icon:"🛣", label:"Roads" },
           { id:"trips", icon:"🏁", label:"Trips" },
           { id:"garage", icon:"🚗", label:"Garage" },
+          { id:"logbook", icon:"📋", label:"Logbook" },
           { id:"profile", icon:"👤", label:"Profile" },
         ].map(({ id, icon, label }) => (
           <button key={id} onClick={() => setScreen(id)} style={{ flex:1, padding:"10px 0 8px", background:"none", border:"none", cursor:"pointer", color:screen===id?C.champagne:C.dim, display:"flex", flexDirection:"column", alignItems:"center", gap:3 }}>
