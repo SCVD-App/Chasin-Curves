@@ -2157,6 +2157,12 @@ const App = () => {
   // would get torn down the moment LogbookView unmounted.
   const [activeTrip, setActiveTrip] = useState(() => getStoredActiveTrip());
   const gpsIntervalRef = useRef(null);
+  // Session 15b: a dedicated second device (e.g. Chasin' Curves mounted for
+  // trail logging while turn-by-turn runs on the driver's main phone) is the
+  // reliable way to capture a trail on unfamiliar roads. Wake Lock keeps
+  // that device's screen from auto-locking mid-trip, which would otherwise
+  // suspend polling exactly like switching apps does.
+  const wakeLockRef = useRef(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [selected, setSelected] = useState(null);
   const [screen, setScreen] = useState("roads");
@@ -2177,6 +2183,7 @@ const App = () => {
   // person to log in on this device.
   const handleSignOut = useCallback(() => {
     if (gpsIntervalRef.current) { clearInterval(gpsIntervalRef.current); gpsIntervalRef.current = null; }
+    if (wakeLockRef.current) { wakeLockRef.current.release().catch(() => {}); wakeLockRef.current = null; }
     setStoredActiveTrip(null);
     setActiveTrip(null);
     clearSession();
@@ -2346,24 +2353,56 @@ const App = () => {
     gpsIntervalRef.current = setInterval(pollAndAppend, GPS_POLL_INTERVAL_MS);
   }, [pollAndAppend]);
 
+  // Best-effort — an unsupported browser or a lock the OS declines to grant
+  // just means the screen may dim/lock sooner, not that recording breaks;
+  // the resume-on-reload path above already covers that case.
+  const requestWakeLock = useCallback(async () => {
+    if (!("wakeLock" in navigator)) return;
+    try { wakeLockRef.current = await navigator.wakeLock.request("screen"); }
+    catch { /* denied or unsupported in this context — not fatal */ }
+  }, []);
+  const releaseWakeLock = useCallback(() => {
+    if (wakeLockRef.current) { wakeLockRef.current.release().catch(() => {}); wakeLockRef.current = null; }
+  }, []);
+
   const startTrailRecording = useCallback((entry, vehicleId) => {
     const trip = { entryId: entry.id, vehicleId, startedAt: Date.now(), points: [], stopped: false };
     setStoredActiveTrip(trip);
     setActiveTrip(trip);
     pollAndAppend(); // grab a first fix immediately rather than waiting a full interval
     beginPolling();
-  }, [pollAndAppend, beginPolling]);
+    requestWakeLock();
+  }, [pollAndAppend, beginPolling, requestWakeLock]);
 
-  // Resume polling on reload if a trip was left running mid-trip.
+  // Resume polling (and the wake lock) on reload if a trip was left running
+  // mid-trip — e.g. the tab was fully discarded and reopened after a long
+  // stretch on Waze, rather than just suspended in the background.
   useEffect(() => {
-    if (activeTrip && !activeTrip.stopped) beginPolling();
+    if (activeTrip && !activeTrip.stopped) { beginPolling(); requestWakeLock(); }
     return () => { if (gpsIntervalRef.current) clearInterval(gpsIntervalRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The Wake Lock spec releases the lock automatically the moment the tab
+  // is hidden (switching to another app, locking the phone) — that's
+  // correct, it should only hold the screen open while Chasin' Curves is
+  // actually the one on screen. Re-request it when the tab becomes visible
+  // again mid-trip, so a brief interruption (a notification, a phone call)
+  // doesn't leave the screen free to auto-lock afterwards.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const trip = getStoredActiveTrip();
+      if (trip && !trip.stopped) requestWakeLock();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [requestWakeLock]);
+
   const handleStopTrip = useCallback(async () => {
     if (!currentUser || !activeTrip) return;
     if (gpsIntervalRef.current) { clearInterval(gpsIntervalRef.current); gpsIntervalRef.current = null; }
+    releaseWakeLock();
     const stopped = { ...activeTrip, stopped: true };
     setActiveTrip(stopped);
     setStoredActiveTrip(stopped);
@@ -2378,12 +2417,13 @@ const App = () => {
       // "Retry Save" button calls this same function again, and nothing is
       // lost in the meantime since the points are already on disk.
     }
-  }, [currentUser, activeTrip, handleSignOut]);
+  }, [currentUser, activeTrip, handleSignOut, releaseWakeLock]);
 
   const discardTrail = useCallback(() => {
+    releaseWakeLock();
     setStoredActiveTrip(null);
     setActiveTrip(null);
-  }, []);
+  }, [releaseWakeLock]);
 
   // ── Logbook — log a trip / attach a return odometer reading ─
   const handleLogTrip = useCallback(async (vehicleId, odometerStart, trackGps) => {
