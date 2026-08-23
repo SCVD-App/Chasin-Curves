@@ -1729,6 +1729,30 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
   const nextTier = TIERS.find(t => t.min > member.points);
   const progress = nextTier ? ((member.points - tier.min) / (nextTier.min - tier.min)) * 100 : 100;
   const fileRef = useRef();
+  const [inviteState, setInviteState] = useState("idle"); // "idle" | "copied"
+
+  // A link, not an account — anyone can already sign themselves up with any
+  // email. This just makes arriving feel like being asked in by name rather
+  // than finding a bare URL. The inviter's name rides along client-side in
+  // the query string (see LoginScreen's banner); no new backend endpoint
+  // needed, and nothing private about the inviter is exposed by it.
+  const handleInvite = async () => {
+    const url = `${window.location.origin}${window.location.pathname}?invite=${encodeURIComponent(member.displayName)}`;
+    const shareData = {
+      title: "Chasin' Curves",
+      text: `${member.displayName} invited you to join Chasin' Curves — roads, rivers & riffs.`,
+      url,
+    };
+    if (navigator.share) {
+      try { await navigator.share(shareData); } catch { /* user cancelled the share sheet — fine */ }
+    } else {
+      try {
+        await navigator.clipboard.writeText(url);
+        setInviteState("copied");
+        setTimeout(() => setInviteState("idle"), 2500);
+      } catch { /* clipboard unavailable — nothing more to do silently */ }
+    }
+  };
 
   const handleSave = () => { onUpdate({ ...member, ...form }); setEditing(false); };
   const handleAvatarUpload = e => {
@@ -1817,6 +1841,11 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
                   </div>
                 ))}
               </div>
+            </div>
+            <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
+              <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne, marginBottom:8 }}>Invite a Mate</div>
+              <div style={{ fontSize:12, color:C.dim, marginBottom:12, lineHeight:1.6 }}>Send a personal invite — they'll see your name on the way in, not just a bare link.</div>
+              <Btn onClick={handleInvite} style={{ width:"100%" }}>{inviteState === "copied" ? "Link copied ✓" : "📤 Invite a Mate"}</Btn>
             </div>
           </>
         )}
@@ -2043,7 +2072,7 @@ const AddRoadModal = ({ onClose, onAdd, onPointsEarned, currentUser }) => {
 // ─── LOGIN SCREEN ─────────────────────────────────────────────
 // v3.0: No more ScreenshotPrompt/username-suggestions — email IS the
 // recovery mechanism now, so there's nothing to lose and nothing to screenshot.
-const LoginScreen = ({ onRequestCode, onVerifyCode, onResend, step, loading, error }) => {
+const LoginScreen = ({ onRequestCode, onVerifyCode, onResend, step, loading, error, inviterName }) => {
   // step: "email" | "code"
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -2056,6 +2085,16 @@ const LoginScreen = ({ onRequestCode, onVerifyCode, onResend, step, loading, err
 
   return (
     <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100dvh", background:C.midnight, padding:32, gap:0 }}>
+      {/* Invite banner — purely cosmetic, from a ?invite= query param on a
+          shared link (see ProfileView's "Invite a Mate"). Never trusted for
+          anything beyond display: it's just the inviter's own display name,
+          URL-encoded client-side, so it can't expose account data. */}
+      {inviterName && (
+        <div style={{ marginBottom:20, padding:"8px 18px", background:C.champagneDim, border:`1px solid ${C.champagne}`, borderRadius:20, fontSize:12, color:C.champagneLight, textAlign:"center", maxWidth:340 }}>
+          🏁 <strong>{inviterName.slice(0, 40)}</strong> invited you to join
+        </div>
+      )}
+
       {/* Logo */}
       <div style={{ textAlign:"center", marginBottom:36 }}>
         <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:42, fontWeight:700, color:C.champagne, lineHeight:1 }}>
@@ -2176,6 +2215,12 @@ const App = () => {
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginStep, setLoginStep] = useState("email"); // "email" | "code"
   const [loginError, setLoginError] = useState("");
+  // Read once at mount — a shared invite link is only ever opened fresh,
+  // never navigated to mid-session, so there's no need to watch for changes.
+  const [inviterName] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get("invite") || null; }
+    catch { return null; }
+  });
 
   // ── Sign out — clears session, forces back to login ────────
   // Stops any in-flight GPS polling too — otherwise a stale interval would
@@ -2479,6 +2524,7 @@ const App = () => {
       step={loginStep}
       loading={loginLoading}
       error={loginError}
+      inviterName={inviterName}
     />;
   }
 
