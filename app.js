@@ -94,6 +94,7 @@ const api = {
   getLogbook: (id) => authedFetch(`${API}/logbook/${id}`),
   postLogEntry: (id, entry) => authedFetch(`${API}/logbook/${id}`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(entry) }),
   addReturnOdometer: (id, entryId, odometerEnd) => authedFetch(`${API}/logbook/${id}/${entryId}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ odometerEnd }) }),
+  saveTrail: (id, entryId, trail) => authedFetch(`${API}/logbook/${id}/${entryId}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ trail }) }),
 
   getTrips: () => fetch(`${API}/trips`).then(r => r.json()),
   postTrip: (trip) => fetch(`${API}/trips`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(trip) }).then(r => r.json()),
@@ -308,6 +309,40 @@ const rollingDayCount = (entries, vehicleId) => {
   );
   return days.size;
 };
+
+// ─── GPS SNAIL TRAIL ─────────────────────────────────────────
+// Master build plan step 2: opt-in-per-trip GPS trail, attached to the
+// same Use Entry the Logbook already writes — no separate table. This is
+// a browser tab, not an installed native app, so tracking only runs while
+// Chasin' Curves is the open, active tab; the phone locking or the user
+// switching to Waze will pause it. The in-app copy says this outright
+// rather than implying background capability the app can't back.
+const GPS_POLL_INTERVAL_MS = 20000; // mid-point of the spec's 10–30s range
+const MAX_TRAIL_POINTS = 1500; // matches the worker's cap — generous, not unbounded
+const ACTIVE_TRIP_KEY = "cc_active_trip"; // local-first: survives a reload mid-trip
+
+const getStoredActiveTrip = () => {
+  try { return JSON.parse(localStorage.getItem(ACTIVE_TRIP_KEY) || "null"); }
+  catch { return null; }
+};
+const setStoredActiveTrip = (trip) => {
+  try {
+    if (trip) localStorage.setItem(ACTIVE_TRIP_KEY, JSON.stringify(trip));
+    else localStorage.removeItem(ACTIVE_TRIP_KEY);
+  } catch { /* storage unavailable — recording still works for this tab session */ }
+};
+
+// One GPS fix, resolved to null (never rejected) on any failure so a
+// denied permission or a timeout just means "this poll got no point",
+// not a crashed trip.
+const pollGpsPoint = () => new Promise(resolve => {
+  if (!navigator.geolocation) { resolve(null); return; }
+  navigator.geolocation.getCurrentPosition(
+    pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, t: Date.now() }),
+    () => resolve(null),
+    { enableHighAccuracy: false, timeout: 15000, maximumAge: 10000 }
+  );
+});
 
 const TIERS = [
   { name: "Explorer", min: 0, max: 199, color: C.muted, icon: "🗺" },
@@ -1205,9 +1240,11 @@ const LogTripModal = ({ member, logbook, onClose, onSubmit }) => {
   const primaryVehicle = garage.find(v => v.primary) || garage[0];
   const [vehicleId, setVehicleId] = useState(primaryVehicle?.id || "");
   const [odometer, setOdometer] = useState("");
+  const [trackGps, setTrackGps] = useState(false);
   const [saving, setSaving] = useState(false);
   const vehicle = garage.find(v => v.id === vehicleId);
   const lastReading = vehicle ? lastOdometerForVehicle(logbook, vehicle.id) : null;
+  const gpsSupported = typeof navigator !== "undefined" && !!navigator.geolocation;
 
   // Smart-default the odometer to the vehicle's last logged reading —
   // re-runs whenever the selected vehicle changes, editable either way.
@@ -1231,7 +1268,7 @@ const LogTripModal = ({ member, logbook, onClose, onSubmit }) => {
     }
     setSaving(true);
     try {
-      await onSubmit(vehicle.id, reading);
+      await onSubmit(vehicle.id, reading, trackGps);
       onClose();
     } finally {
       setSaving(false);
@@ -1252,6 +1289,21 @@ const LogTripModal = ({ member, logbook, onClose, onSubmit }) => {
         <div style={{ fontSize: 11, color: C.dim, marginBottom: 14, lineHeight: 1.5 }}>
           No registration state set for this vehicle — the entry will still be logged, but day-cap tracking won't show until you set one in the Garage.
         </div>
+      )}
+      {gpsSupported ? (
+        <div onClick={() => setTrackGps(t => !t)} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: 12, marginBottom: 14, borderRadius: 8, border: `1px solid ${trackGps ? C.champagne : C.border}`, background: trackGps ? C.champagneDim : "none", cursor: "pointer" }}>
+          <div style={{ width: 18, height: 18, borderRadius: 4, border: `2px solid ${trackGps ? C.champagne : C.border2}`, background: trackGps ? C.champagneDim : "none", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: C.champagne, flexShrink: 0, marginTop: 1 }}>
+            {trackGps ? "✓" : ""}
+          </div>
+          <div>
+            <div style={{ fontSize: 13, color: C.bone }}>Track GPS trail for this trip</div>
+            <div style={{ fontSize: 11, color: C.dim, marginTop: 3, lineHeight: 1.5 }}>
+              Opt-in, this trip only. Needs Chasin' Curves open and the screen on for the drive — locking your phone or switching apps will pause it.
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: C.dim, marginBottom: 14 }}>GPS trail isn't available on this device/browser.</div>
       )}
       <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
         <Btn variant="ghost" onClick={onClose} style={{ flex: 1 }}>Cancel</Btn>
@@ -1305,8 +1357,93 @@ const VehicleDayCapCard = ({ vehicle, logbook }) => {
   );
 };
 
+// Read-only trail preview — a polyline + start/end pins on the existing
+// Mapbox instance, so a recorded trip's data is actually visible rather
+// than just a point count. Deliberately not the drag-to-select Road
+// extraction UI from snail-trail-road-extraction.md — that's a separate,
+// later build; this is only phase 2, capture + confirm-it-worked.
+const TrailViewerModal = ({ entry, vehicleName, onClose }) => {
+  const mapContainer = useRef(null);
+  const mapRef = useRef(null);
+  const [mapFailed, setMapFailed] = useState(false);
+  const points = entry.trail || [];
+
+  useEffect(() => {
+    if (!window.mapboxgl || MAPBOX_TOKEN.includes("PASTE_YOUR") || points.length === 0) {
+      setMapFailed(true);
+      return;
+    }
+    window.mapboxgl.accessToken = MAPBOX_TOKEN;
+    const coords = points.map(p => [p.lng, p.lat]);
+    const map = new window.mapboxgl.Map({
+      container: mapContainer.current,
+      style: "mapbox://styles/mapbox/dark-v11",
+      center: coords[Math.floor(coords.length / 2)],
+      zoom: 11,
+      attributionControl: false,
+    });
+    map.addControl(new window.mapboxgl.NavigationControl({ showCompass: false }), "top-right");
+
+    map.on("load", () => {
+      map.addSource("trail", { type: "geojson", data: { type: "Feature", geometry: { type: "LineString", coordinates: coords } } });
+      map.addLayer({ id: "trail-line", type: "line", source: "trail", paint: { "line-color": C.champagne, "line-width": 3 } });
+
+      new window.mapboxgl.Marker({ color: "#2ecc71" }).setLngLat(coords[0]).addTo(map);
+      new window.mapboxgl.Marker({ color: C.red }).setLngLat(coords[coords.length - 1]).addTo(map);
+
+      const bounds = coords.reduce((b, c) => b.extend(c), new window.mapboxgl.LngLatBounds(coords[0], coords[0]));
+      map.fitBounds(bounds, { padding: 40, maxZoom: 15 });
+      mapRef.current = map;
+    });
+    map.on("error", () => setMapFailed(true));
+
+    return () => { map.remove(); mapRef.current = null; };
+  }, []);
+
+  return (
+    <Modal title="GPS Trail" subtitle={`${vehicleName} · ${points.length} point${points.length !== 1 ? "s" : ""} · ${new Date(entry.timestamp).toLocaleDateString('en-AU')}`} onClose={onClose} wide>
+      <div style={{ position: "relative", height: 320, borderRadius: 8, overflow: "hidden", background: "#0a0f14" }}>
+        <div ref={mapContainer} style={{ position: "absolute", inset: 0 }} />
+        {mapFailed && (
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: C.dim, fontSize: 12, textAlign: "center", padding: 20 }}>
+            {points.length === 0 ? "No points recorded for this trip." : "Map unavailable."}
+          </div>
+        )}
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
+        <Btn variant="ghost" onClick={onClose}>Close</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+// Persistent banner shown app-wide (not just on the Logbook screen) while
+// a trail is recording — GPS polling lives in App so it survives the user
+// switching screens; if this only lived inside LogbookView it would stop
+// the moment they tapped away to Roads or Garage.
+const ActiveTripBanner = ({ activeTrip, vehicleName, onStop, onDiscard }) => {
+  if (!activeTrip) return null;
+  const elapsedMin = Math.max(0, Math.round((Date.now() - activeTrip.startedAt) / 60000));
+  return (
+    <div style={{ padding: "10px 16px", background: `${C.champagne}15`, borderBottom: `1px solid ${C.champagne}44`, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+      <span style={{ fontSize: 16 }}>{activeTrip.stopped ? "⏸" : "📍"}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12, color: C.champagne, fontWeight: 700 }}>
+          {activeTrip.stopped ? "Trail not saved yet" : "Recording trail"} — {vehicleName}
+        </div>
+        <div style={{ fontSize: 10, color: C.dim, marginTop: 1 }}>
+          {activeTrip.points.length} point{activeTrip.points.length !== 1 ? "s" : ""}{!activeTrip.stopped ? ` · ${elapsedMin} min so far` : ""}
+        </div>
+      </div>
+      {activeTrip.stopped && <Btn size="sm" variant="ghost" onClick={onDiscard}>Discard</Btn>}
+      <Btn size="sm" onClick={onStop}>{activeTrip.stopped ? "Retry Save" : "Stop Trip"}</Btn>
+    </div>
+  );
+};
+
 const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPointsEarned }) => {
   const [showLog, setShowLog] = useState(false);
+  const [viewingTrail, setViewingTrail] = useState(null);
   const garage = member.garage || [];
   const sorted = [...(logbook || [])].sort((a, b) => b.timestamp - a.timestamp);
 
@@ -1315,8 +1452,8 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPoint
     return v ? `${v.year} ${v.make} ${v.model}` : "Unknown vehicle";
   };
 
-  const handleSubmit = async (vehicleId, odometerStart) => {
-    await onLogEntry(vehicleId, odometerStart);
+  const handleSubmit = async (vehicleId, odometerStart, trackGps) => {
+    await onLogEntry(vehicleId, odometerStart, trackGps);
     onPointsEarned("log_trip");
   };
 
@@ -1368,9 +1505,14 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPoint
                   Odo {e.odometerStart}{e.odometerEnd != null ? ` → ${e.odometerEnd}` : ""}
                 </div>
               </div>
-              {e.odometerEnd == null && (
-                <Btn size="sm" variant="ghost" onClick={() => handleReturnOdo(e)}>+ Return Odo</Btn>
-              )}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end", flexShrink: 0 }}>
+                {e.odometerEnd == null && (
+                  <Btn size="sm" variant="ghost" onClick={() => handleReturnOdo(e)}>+ Return Odo</Btn>
+                )}
+                {e.trail?.length > 0 && (
+                  <Btn size="sm" variant="ghost" onClick={() => setViewingTrail(e)}>📍 {e.trail.length} pts</Btn>
+                )}
+              </div>
             </div>
           ))}
         </div>
@@ -1384,6 +1526,10 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPoint
 
       {showLog && (
         <LogTripModal member={member} logbook={logbook} onClose={() => setShowLog(false)} onSubmit={handleSubmit} />
+      )}
+
+      {viewingTrail && (
+        <TrailViewerModal entry={viewingTrail} vehicleName={vehicleName(viewingTrail.vehicleId)} onClose={() => setViewingTrail(null)} />
       )}
     </div>
   );
@@ -2006,6 +2152,11 @@ const App = () => {
   const [trips, setTrips] = useState([]);
   const [pointsLog, setPointsLog] = useState([]);
   const [logbook, setLogbook] = useState([]);
+  // Lives here (not inside LogbookView) so GPS polling keeps running when
+  // the user switches to another screen — a component-local interval
+  // would get torn down the moment LogbookView unmounted.
+  const [activeTrip, setActiveTrip] = useState(() => getStoredActiveTrip());
+  const gpsIntervalRef = useRef(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [selected, setSelected] = useState(null);
   const [screen, setScreen] = useState("roads");
@@ -2021,7 +2172,13 @@ const App = () => {
   const [loginError, setLoginError] = useState("");
 
   // ── Sign out — clears session, forces back to login ────────
+  // Stops any in-flight GPS polling too — otherwise a stale interval would
+  // keep firing after sign-out and could even attach a trail to the next
+  // person to log in on this device.
   const handleSignOut = useCallback(() => {
+    if (gpsIntervalRef.current) { clearInterval(gpsIntervalRef.current); gpsIntervalRef.current = null; }
+    setStoredActiveTrip(null);
+    setActiveTrip(null);
     clearSession();
     setCurrentUser(null);
     setPointsLog([]);
@@ -2168,17 +2325,80 @@ const App = () => {
     } catch (e) { if (e?.authFailed) handleSignOut(); }
   }, [currentUser?.id, handleSignOut]);
 
+  // ── GPS Snail Trail — one interval, lives at App level so it survives
+  // screen switches. Local-first: every point lands in localStorage as it's
+  // polled, and the server only sees the trail once, in one PUT, when the
+  // trip is stopped — see the GPS_POLL_INTERVAL_MS comment above.
+  const pollAndAppend = useCallback(async () => {
+    const point = await pollGpsPoint();
+    if (!point) return; // denied/timeout — just skip this tick, trip keeps running
+    setActiveTrip(prev => {
+      if (!prev || prev.stopped) return prev;
+      const points = [...prev.points, point].slice(-MAX_TRAIL_POINTS);
+      const next = { ...prev, points };
+      setStoredActiveTrip(next);
+      return next;
+    });
+  }, []);
+
+  const beginPolling = useCallback(() => {
+    if (gpsIntervalRef.current) clearInterval(gpsIntervalRef.current);
+    gpsIntervalRef.current = setInterval(pollAndAppend, GPS_POLL_INTERVAL_MS);
+  }, [pollAndAppend]);
+
+  const startTrailRecording = useCallback((entry, vehicleId) => {
+    const trip = { entryId: entry.id, vehicleId, startedAt: Date.now(), points: [], stopped: false };
+    setStoredActiveTrip(trip);
+    setActiveTrip(trip);
+    pollAndAppend(); // grab a first fix immediately rather than waiting a full interval
+    beginPolling();
+  }, [pollAndAppend, beginPolling]);
+
+  // Resume polling on reload if a trip was left running mid-trip.
+  useEffect(() => {
+    if (activeTrip && !activeTrip.stopped) beginPolling();
+    return () => { if (gpsIntervalRef.current) clearInterval(gpsIntervalRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleStopTrip = useCallback(async () => {
+    if (!currentUser || !activeTrip) return;
+    if (gpsIntervalRef.current) { clearInterval(gpsIntervalRef.current); gpsIntervalRef.current = null; }
+    const stopped = { ...activeTrip, stopped: true };
+    setActiveTrip(stopped);
+    setStoredActiveTrip(stopped);
+    try {
+      await api.saveTrail(currentUser.id, activeTrip.entryId, activeTrip.points);
+      setLogbook(prev => prev.map(e => e.id === activeTrip.entryId ? { ...e, trail: activeTrip.points } : e));
+      setStoredActiveTrip(null);
+      setActiveTrip(null);
+    } catch (e) {
+      if (e?.authFailed) handleSignOut();
+      // Otherwise leave it stopped-but-unsaved in localStorage — the banner's
+      // "Retry Save" button calls this same function again, and nothing is
+      // lost in the meantime since the points are already on disk.
+    }
+  }, [currentUser, activeTrip, handleSignOut]);
+
+  const discardTrail = useCallback(() => {
+    setStoredActiveTrip(null);
+    setActiveTrip(null);
+  }, []);
+
   // ── Logbook — log a trip / attach a return odometer reading ─
-  const handleLogTrip = useCallback(async (vehicleId, odometerStart) => {
+  const handleLogTrip = useCallback(async (vehicleId, odometerStart, trackGps) => {
     if (!currentUser) return;
     try {
       const res = await api.postLogEntry(currentUser.id, { vehicleId, odometerStart });
-      if (res?.entry) setLogbook(prev => [...prev, res.entry]);
+      if (res?.entry) {
+        setLogbook(prev => [...prev, res.entry]);
+        if (trackGps) startTrailRecording(res.entry, vehicleId);
+      }
     } catch (e) {
       if (e?.authFailed) handleSignOut();
       else alert(`Couldn't log the trip: ${e.message}`);
     }
-  }, [currentUser, handleSignOut]);
+  }, [currentUser, handleSignOut, startTrailRecording]);
 
   const handleAddReturnOdometer = useCallback(async (entryId, odometerEnd) => {
     if (!currentUser) return;
@@ -2253,6 +2473,16 @@ const App = () => {
         const activated = new Date().toISOString();
         updateCurrentUser({ ...currentUser, pitPassActivated: activated });
       }} />
+
+      <ActiveTripBanner
+        activeTrip={activeTrip}
+        vehicleName={(() => {
+          const v = currentUser.garage?.find(v => v.id === activeTrip?.vehicleId);
+          return v ? `${v.make || ""} ${v.model || ""}`.trim() || "Vehicle" : "Vehicle";
+        })()}
+        onStop={handleStopTrip}
+        onDiscard={discardTrail}
+      />
 
       {screen === "roads" && !showRoadDetail && (
         <MapView roads={roads} selected={selected} onSelect={r => { setSelected(r); setShowRoadDetail(true); }} trips={trips} currentUser={currentUser} />

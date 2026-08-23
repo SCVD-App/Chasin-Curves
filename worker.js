@@ -23,6 +23,10 @@
 //             to "entries are immutable": it lets a later return-odometer
 //             reading be attached, nothing else about a filed entry can be
 //             changed after the fact.
+// Session 15: GPS Snail Trail — PUT /logbook/:id/:entryId also accepts an
+//             optional `trail` array (opt-in per trip, written once when
+//             the trip is stopped, not streamed live). No new endpoint,
+//             same immutability rule, just one more optional field.
 // Endpoints: 27 total
 //
 // Secrets required in Cloudflare dashboard:
@@ -479,10 +483,15 @@ export default {
     const logbookMatch = path.match(/^\/logbook\/([^/]+)$/);
     const logbookEntryMatch = path.match(/^\/logbook\/([^/]+)\/([^/]+)$/);
 
-    // PUT /logbook/:id/:entryId — the ONE mutation a filed entry ever gets:
-    // attaching a return odometer reading captured after the trip. Nothing
-    // else (timestamp, odometer_start, vehicleId) can be changed once an
-    // entry exists — that immutability is the actual compliance feature.
+    // PUT /logbook/:id/:entryId — the only mutations a filed entry ever gets:
+    // attaching a return odometer reading, and/or a GPS trail, both captured
+    // after the fact. Nothing else (timestamp, odometer_start, vehicleId)
+    // can be changed once an entry exists — that immutability is the actual
+    // compliance feature. Session 15: `trail` added — an opt-in-per-trip
+    // array of {lat, lng, t} points from the GPS Snail Trail spec, written
+    // once when the trip is stopped (not streamed point-by-point), so this
+    // stays the same "one settle-up write" shape as the odometer case.
+    const MAX_TRAIL_POINTS = 1500; // ~8+ hours at a 20s poll — generous, not unbounded
     if (logbookEntryMatch && method === 'PUT') {
       const userId = cleanEmail(logbookEntryMatch[1]);
       const entryId = logbookEntryMatch[2];
@@ -491,15 +500,32 @@ export default {
       if (authedEmail !== userId) return err('Forbidden', 403);
 
       const body = await request.json();
-      if (typeof body.odometerEnd !== 'number') return err('odometerEnd (number) required');
+      const hasOdo = typeof body.odometerEnd === 'number';
+      const hasTrail = Array.isArray(body.trail);
+      if (!hasOdo && !hasTrail) return err('odometerEnd (number) and/or trail (array) required');
+
+      if (hasTrail) {
+        if (body.trail.length > MAX_TRAIL_POINTS) return err(`trail exceeds ${MAX_TRAIL_POINTS} points`);
+        const validShape = body.trail.every(p =>
+          p && typeof p.lat === 'number' && typeof p.lng === 'number' && typeof p.t === 'number'
+        );
+        if (!validShape) return err('Each trail point needs numeric lat, lng, and t');
+      }
 
       const entries = JSON.parse(await env.CURVES_KV.get(`logbook:${userId}`) || '[]');
       const idx = entries.findIndex(e => e.id === entryId);
       if (idx === -1) return err('Entry not found', 404);
-      if (body.odometerEnd < entries[idx].odometerStart) {
-        return err("Return odometer can't be less than the start reading");
+
+      if (hasOdo) {
+        if (body.odometerEnd < entries[idx].odometerStart) {
+          return err("Return odometer can't be less than the start reading");
+        }
+        entries[idx].odometerEnd = body.odometerEnd;
       }
-      entries[idx].odometerEnd = body.odometerEnd;
+      if (hasTrail) {
+        entries[idx].trail = body.trail;
+      }
+
       await env.CURVES_KV.put(`logbook:${userId}`, JSON.stringify(entries));
       return json({ ok: true });
     }
