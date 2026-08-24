@@ -282,7 +282,16 @@ const POINT_ACTIONS = {
 // bar shown until the real numbers are confirmed, rather than guessing.
 const REGO_STATES = ["QLD", "NSW", "VIC", "SA", "WA", "TAS", "ACT", "NT"];
 const NO_CAP_STATES = ["QLD", "WA"];
-const FIXED_DAY_CAPS = { NSW: 60, ACT: 60, SA: 90 }; // VIC is vehicle-specific, see below
+// NT confirmed 24 Aug via the NT Motor Vehicle Enthusiast Club Registration
+// Scheme Guidelines (Section 7 / Condition 10): 90 days total, split 60 for
+// approved club events + 30 for maintenance/test-driving/personal use — only
+// the personal-use 30 is this app's day-cap half, since club-event entries
+// aren't tracked yet (see the hybrid-state note above). TAS confirmed via
+// the Special Interest Vehicle scheme guidelines (effective 1 Dec 2025,
+// replacing the old separate historic/vintage/street rod schemes): 104
+// days, all classes, no separate uncapped club-event carve-out — genuinely
+// pure day-cap, same shape as VIC/SA.
+const FIXED_DAY_CAPS = { NSW: 60, ACT: 60, SA: 90, NT: 30, TAS: 104 }; // VIC is vehicle-specific, see below
 const VIC_DAY_CAP_OPTIONS = [45, 90];
 
 // VIC registers a vehicle against 45 OR 90 days, owner's choice — stored
@@ -293,12 +302,23 @@ const dayCapFor = vehicle => {
   return FIXED_DAY_CAPS[vehicle.regoState] || null;
 };
 
-// Rolling 365-day trailing window rather than a rego-anniversary-anchored
-// year — simplest correct read of "day-count per vehicle per registration
-// year" without needing an extra rego-renewal-date field. Flagging the
-// assumption here in case a state's fine print turns out to anchor the
-// count to a fixed rego date instead of a rolling window — worth
-// confirming before this is relied on for an actual roadside stop.
+// Which states anchor their day-cap "year" to the vehicle's own registration
+// commencement/renewal date, rather than counting back over a rolling
+// trailing window. Confirmed for NT straight from its official guidelines
+// ("...in the 12 month period from commencement date of the current
+// registration period"). Every other state defaults to the rolling model
+// below — that's still an unconfirmed assumption for most of them
+// (NSW/ACT/SA/VIC/TAS), carried over from the original spec, not a proven
+// fact. TAS in particular just had its whole scheme rewritten (1 Dec 2025)
+// and its guidelines never say how the 12-month period is measured, so
+// rolling is the conservative default there — it can only ever be as
+// permissive or stricter than a real anchored reading, never more lenient —
+// not a confirmed answer. Add a state here only once its own guideline text
+// is read and says so, the way NT's did.
+const ANCHORED_WINDOW_STATES = ["NT"];
+
+// Rolling 365-day trailing window — the conservative default for every
+// state not listed in ANCHORED_WINDOW_STATES above.
 const ROLLING_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
 const rollingDayCount = (entries, vehicleId) => {
   const cutoff = Date.now() - ROLLING_WINDOW_MS;
@@ -308,6 +328,48 @@ const rollingDayCount = (entries, vehicleId) => {
       .map(e => new Date(e.timestamp).toDateString())
   );
   return days.size;
+};
+
+// Anchored-window counter for states like NT: finds the most recent
+// anniversary of the vehicle's own regoAnniversary date on or before today,
+// then counts distinct use-days from that anniversary forward. The count
+// hard-resets to zero the moment a new registration period begins, exactly
+// as NT's guidelines describe it — no memory of days used before the reset.
+const mostRecentAnniversary = (anchorDateStr, today = new Date()) => {
+  if (!anchorDateStr) return null;
+  const anchor = new Date(anchorDateStr);
+  if (isNaN(anchor.getTime())) return null;
+  const candidate = new Date(today.getFullYear(), anchor.getMonth(), anchor.getDate());
+  if (candidate.getTime() > today.getTime()) candidate.setFullYear(candidate.getFullYear() - 1);
+  return candidate;
+};
+
+const anchoredDayCount = (entries, vehicleId, anchorDateStr) => {
+  const periodStart = mostRecentAnniversary(anchorDateStr);
+  if (!periodStart) return null; // no rego date on file yet — can't anchor a count to nothing
+  const cutoff = periodStart.getTime();
+  const days = new Set(
+    (entries || [])
+      .filter(e => e.vehicleId === vehicleId && e.entryType === "general_use" && e.timestamp >= cutoff)
+      .map(e => new Date(e.timestamp).toDateString())
+  );
+  return days.size;
+};
+
+// Single dispatcher every screen calls instead of picking a counter itself —
+// the vehicle's own regoState is the only thing that decides which model
+// runs, so there's no separate toggle that could drift out of sync with it.
+// Both counters stay live in the codebase side by side; reclassifying a
+// state (the way NT just moved from "unconfirmed" to "anchored") is a
+// one-line change to ANCHORED_WINDOW_STATES above, not a rewrite of either
+// function. Returns null (distinct from 0) when an anchored state has no
+// regoAnniversary set yet — that's a "needs setup" state, not "zero days used".
+const dayCountFor = (vehicle, entries) => {
+  if (!vehicle?.regoState) return null;
+  if (ANCHORED_WINDOW_STATES.includes(vehicle.regoState)) {
+    return anchoredDayCount(entries, vehicle.id, vehicle.regoAnniversary);
+  }
+  return rollingDayCount(entries, vehicle.id);
 };
 
 // ─── GPS SNAIL TRAIL ─────────────────────────────────────────
@@ -426,6 +488,15 @@ const RegoStateField = ({ vehicle, onChange }) => {
               {days}-day scheme
             </button>
           ))}
+        </div>
+      )}
+      {ANCHORED_WINDOW_STATES.includes(vehicle.regoState) && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>Registration renewal date</div>
+          <input type="date" value={vehicle.regoAnniversary || ""} onChange={e => onChange({ regoAnniversary: e.target.value })} style={selectStyle} />
+          <div style={{ fontSize: 10, color: C.dim, marginTop: 5, lineHeight: 1.5 }}>
+            {vehicle.regoState} resets its day count on this date each year, not on a rolling 365-day window — needed to track it correctly.
+          </div>
         </div>
       )}
     </div>
@@ -901,7 +972,7 @@ const AddedByLink = ({ memberId, onOpen, style: sx }) => {
 const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh, onSelectVehicle }) => {
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ make: "", model: "", year: "", variant: "", colour: "", notes: "", regoState: "", vicDayCap: 90 });
+  const [form, setForm] = useState({ make: "", model: "", year: "", variant: "", colour: "", notes: "", regoState: "", vicDayCap: 90, regoAnniversary: "" });
   const fileInputRefs = useRef({});
 
   const triggerFileInput = (vehicleId) => {
@@ -917,7 +988,7 @@ const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh, onSelectVehic
     const v = { id: `v${Date.now()}`, ...form, avatar: null, primary: member.garage.length === 0 };
     await onUpdate({ ...member, garage: [...member.garage, v] });
     onPointsEarned("add_vehicle");
-    setForm({ make: "", model: "", year: "", variant: "", colour: "", notes: "", regoState: "", vicDayCap: 90 });
+    setForm({ make: "", model: "", year: "", variant: "", colour: "", notes: "", regoState: "", vicDayCap: 90, regoAnniversary: "" });
     setShowAdd(false);
     setSaving(false);
     if (onRefresh) await onRefresh();
@@ -1315,7 +1386,8 @@ const LogTripModal = ({ member, logbook, onClose, onSubmit }) => {
 
 const VehicleDayCapCard = ({ vehicle, logbook }) => {
   const cap = dayCapFor(vehicle);
-  const used = rollingDayCount(logbook, vehicle.id);
+  const anchored = ANCHORED_WINDOW_STATES.includes(vehicle.regoState);
+  const used = dayCountFor(vehicle, logbook);
   const label = `${vehicle.year} ${vehicle.make} ${vehicle.model}`;
 
   if (!vehicle.regoState) {
@@ -1342,7 +1414,22 @@ const VehicleDayCapCard = ({ vehicle, logbook }) => {
       </div>
     );
   }
+  // Anchored state, cap known, but no rego renewal date on file yet — the
+  // count literally has nothing to anchor to, so ask for it instead of
+  // silently falling back to a rolling guess for a state we know isn't one.
+  if (anchored && used === null) {
+    return (
+      <div style={{ padding: 12, borderRadius: 8, border: `1px dashed ${C.border2}`, marginBottom: 10 }}>
+        <div style={{ fontSize: 13, color: C.bone, marginBottom: 2 }}>{label} · {vehicle.regoState}</div>
+        <div style={{ fontSize: 11, color: C.dim }}>Set this vehicle's registration renewal date in the Garage to start tracking — {vehicle.regoState} resets its {cap}-day count on that date each year, not on a rolling window.</div>
+      </div>
+    );
+  }
   const over = used >= cap;
+  const anniversary = anchored ? mostRecentAnniversary(vehicle.regoAnniversary) : null;
+  const resetLabel = anniversary
+    ? `Resets ${anniversary.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })} each year — anchored to your rego renewal, not a rolling window`
+    : "Rolling 365-day count, not a fixed calendar year — cross-check against your actual rego period";
   return (
     <div style={{ padding: 12, borderRadius: 8, border: `1px solid ${over ? C.red : C.border}`, marginBottom: 10 }}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
@@ -1352,7 +1439,7 @@ const VehicleDayCapCard = ({ vehicle, logbook }) => {
       <div style={{ height: 3, background: "#1e1e1e", borderRadius: 2 }}>
         <div style={{ height: "100%", width: `${Math.min(100, (used / cap) * 100)}%`, background: over ? C.red : `linear-gradient(90deg, ${C.champagne}, ${C.champagneLight})`, borderRadius: 2 }} />
       </div>
-      <div style={{ fontSize: 10, color: C.dim, marginTop: 5 }}>Rolling 365-day count, not a fixed calendar year — cross-check against your actual rego period</div>
+      <div style={{ fontSize: 10, color: C.dim, marginTop: 5 }}>{resetLabel}</div>
     </div>
   );
 };
