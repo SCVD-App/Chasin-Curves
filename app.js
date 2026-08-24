@@ -1357,6 +1357,210 @@ const VehicleDayCapCard = ({ vehicle, logbook }) => {
   );
 };
 
+// ─── DAILY TRIP SHARE CARD ───────────────────────────────────
+// A day's logged trips distilled into one shareable image — built the
+// same way as the "Invite a Mate" share (Web Share API, generated
+// client-side, no server involved), but for turning real driving into
+// something worth dropping in a family group chat. Distance always comes
+// from the Logbook's own odometer readings, which stay accurate even
+// when the GPS trail has gaps from switching over to Waze — the route
+// line and place names are a bonus when trail data exists, not a
+// requirement. A day logged with no GPS trail still gets a branded card,
+// just without the map.
+
+// Standard Google/Mapbox polyline encoding, precision 5 — how Mapbox's
+// Static Images API wants a route handed to it as a path overlay,
+// without a server round-trip or a new dependency.
+const encodePolyline = (points) => {
+  let output = "", prevLat = 0, prevLng = 0;
+  const encodeValue = (value) => {
+    let v = value < 0 ? ~(value << 1) : (value << 1);
+    let out = "";
+    while (v >= 0x20) { out += String.fromCharCode((0x20 | (v & 0x1f)) + 63); v >>= 5; }
+    out += String.fromCharCode(v + 63);
+    return out;
+  };
+  for (const p of points) {
+    const lat = Math.round(p.lat * 1e5);
+    const lng = Math.round(p.lng * 1e5);
+    output += encodeValue(lat - prevLat) + encodeValue(lng - prevLng);
+    prevLat = lat; prevLng = lng;
+  }
+  return output;
+};
+
+// Mapbox's Static Images URL has a practical length ceiling, and a full
+// multi-hour trail (up to 1500 points per logged trip, several trips in
+// one day) would blow well past it. The map here is a cosmetic overview,
+// not a survey — a few hundred points reads identically to a human eye.
+const downsampleForMap = (points, maxPoints = 150) => {
+  if (points.length <= maxPoints) return points;
+  const stride = Math.ceil(points.length / maxPoints);
+  const out = points.filter((_, i) => i % stride === 0);
+  if (out[out.length - 1] !== points[points.length - 1]) out.push(points[points.length - 1]);
+  return out;
+};
+
+const buildStaticMapUrl = (points, width = 1080, height = 660) => {
+  const encoded = encodePolyline(downsampleForMap(points));
+  const overlay = `path-4+C9A84C-0.9(${encodeURIComponent(encoded)})`;
+  return `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/${overlay}/auto/${width}x${height}@2x?padding=50&access_token=${MAPBOX_TOKEN}`;
+};
+
+// Best-effort reverse geocode for a friendly "Robe, SA → Naracoorte, SA"
+// line — never blocks the card on failure, just omits the place names.
+const reverseGeocodePlace = async (lat, lng) => {
+  try {
+    const res = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?types=place&limit=1&access_token=${MAPBOX_TOKEN}`);
+    const data = await res.json();
+    const feature = data?.features?.[0];
+    if (!feature) return null;
+    const region = feature.context?.find(c => c.id.startsWith("region"));
+    const shortCode = region?.short_code?.split("-")[1]?.toUpperCase();
+    return shortCode ? `${feature.text}, ${shortCode}` : feature.text;
+  } catch { return null; }
+};
+
+const loadMapImage = (url) => new Promise((resolve) => {
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = () => resolve(img);
+  img.onerror = () => resolve(null);
+  img.src = url;
+});
+
+// Canvas text only draws in a web font once the browser has actually
+// rasterized that exact weight/size — load everything this card uses,
+// then wait for confirmation, rather than risk a silent fallback to a
+// generic serif on the first share of the day.
+const ensureFontsLoaded = async () => {
+  try {
+    await Promise.all([
+      document.fonts.load("700 150px 'Cormorant Garamond'"),
+      document.fonts.load("700 54px 'Cormorant Garamond'"),
+      document.fonts.load("600 30px 'Josefin Sans'"),
+      document.fonts.load("600 16px 'Josefin Sans'"),
+      document.fonts.load("400 32px 'Josefin Sans'"),
+      document.fonts.load("400 26px 'Josefin Sans'"),
+      document.fonts.load("400 22px 'Josefin Sans'"),
+    ]);
+    await document.fonts.ready;
+  } catch { /* Font Loading API unavailable — canvas falls back to a system font */ }
+};
+
+// The three curved road-lines from the login screen, redrawn on canvas
+// for a day with no GPS trail — keeps the card branded rather than blank.
+const drawRoadLines = (ctx, cx, cy) => {
+  const draw = (yOffset, color, width, alpha) => {
+    ctx.beginPath();
+    ctx.moveTo(cx - 300, cy + yOffset);
+    ctx.quadraticCurveTo(cx, cy + yOffset - 45, cx + 300, cy + yOffset);
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.globalAlpha = alpha;
+    ctx.stroke(); ctx.globalAlpha = 1;
+  };
+  draw(0, C.champagne, 3, 0.14);
+  draw(24, C.champagne, 1.5, 0.09);
+  draw(-24, C.blue, 1, 0.09);
+};
+
+// Groups the Logbook's flat entry list into one row per calendar day,
+// most recent first — a family updating a group chat shares by day, not
+// by individual logged leg, and a day may have several legs (fuel stop,
+// lunch stop, campground) that should roll into one distance and route.
+const groupEntriesByDay = (entries) => {
+  const groups = new Map();
+  for (const e of entries) {
+    const key = new Date(e.timestamp).toDateString();
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(e);
+  }
+  return Array.from(groups.entries())
+    .map(([key, dayEntries]) => {
+      const completed = dayEntries.filter(e => e.odometerEnd != null);
+      const distanceKm = completed.reduce((sum, e) => sum + (e.odometerEnd - e.odometerStart), 0);
+      const trail = dayEntries
+        .slice().sort((a, b) => a.timestamp - b.timestamp)
+        .flatMap(e => e.trail || []);
+      const vehicleIds = Array.from(new Set(dayEntries.map(e => e.vehicleId)));
+      return { key, date: new Date(dayEntries[0].timestamp), entries: dayEntries, completed, distanceKm, trail, vehicleIds };
+    })
+    .sort((a, b) => b.date - a.date);
+};
+
+// Renders the actual card and resolves a PNG Blob (null only if the
+// canvas itself is unavailable) — a failed map fetch or geocode just
+// means a plainer, still-branded card, never a thrown error.
+const drawTripCard = async ({ distanceKm, dateLabel, vehicleLabel, legCount, trail }) => {
+  await ensureFontsLoaded();
+  const canvas = document.createElement("canvas");
+  canvas.width = 1080; canvas.height = 1350;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  const cx = 540;
+
+  ctx.fillStyle = C.midnight;
+  ctx.fillRect(0, 0, 1080, 1350);
+
+  let startPlace = null, endPlace = null;
+  const hasTrail = trail && trail.length >= 2;
+
+  if (hasTrail) {
+    const mapUrl = buildStaticMapUrl(trail);
+    const [mapImg, sp, ep] = await Promise.all([
+      loadMapImage(mapUrl),
+      reverseGeocodePlace(trail[0].lat, trail[0].lng),
+      reverseGeocodePlace(trail[trail.length - 1].lat, trail[trail.length - 1].lng),
+    ]);
+    startPlace = sp; endPlace = ep;
+    if (mapImg) {
+      ctx.drawImage(mapImg, 0, 0, 1080, 660);
+      const grad = ctx.createLinearGradient(0, 520, 0, 660);
+      grad.addColorStop(0, "rgba(13,13,13,0)");
+      grad.addColorStop(1, C.midnight);
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 520, 1080, 140);
+    } else {
+      drawRoadLines(ctx, cx, 330);
+    }
+  } else {
+    drawRoadLines(ctx, cx, 330);
+  }
+
+  const wordmarkY = hasTrail ? 740 : 470;
+  ctx.textAlign = "center";
+  ctx.fillStyle = C.champagne;
+  ctx.font = "700 54px 'Cormorant Garamond'";
+  ctx.fillText("Chasin’ Curves", cx, wordmarkY);
+
+  ctx.fillStyle = C.dim;
+  ctx.font = "600 16px 'Josefin Sans'";
+  ctx.fillText("R O A D S ,   R I V E R S   &   R I F F S", cx, wordmarkY + 34);
+
+  const midY = hasTrail ? 950 : 680;
+  ctx.fillStyle = C.champagne;
+  ctx.font = "700 150px 'Cormorant Garamond'";
+  ctx.fillText(`${Math.round(distanceKm)}`, cx, midY);
+  ctx.fillStyle = C.champagneLight;
+  ctx.font = "600 30px 'Josefin Sans'";
+  ctx.fillText("KILOMETRES", cx, midY + 40);
+
+  ctx.fillStyle = C.bone;
+  ctx.font = "400 32px 'Josefin Sans'";
+  ctx.fillText(dateLabel, cx, midY + 110);
+
+  if (startPlace && endPlace) {
+    ctx.fillStyle = C.muted;
+    ctx.font = "400 26px 'Josefin Sans'";
+    ctx.fillText(`${startPlace} → ${endPlace}`, cx, midY + 155);
+  }
+
+  ctx.fillStyle = C.dim;
+  ctx.font = "400 22px 'Josefin Sans'";
+  ctx.fillText(`${vehicleLabel} · ${legCount} leg${legCount !== 1 ? "s" : ""}`, cx, 1300);
+
+  return new Promise(resolve => canvas.toBlob(blob => resolve(blob), "image/png", 0.95));
+};
+
 // Read-only trail preview — a polyline + start/end pins on the existing
 // Mapbox instance, so a recorded trip's data is actually visible rather
 // than just a point count. Deliberately not the drag-to-select Road
@@ -1417,6 +1621,87 @@ const TrailViewerModal = ({ entry, vehicleName, onClose }) => {
   );
 };
 
+// Lists every day that has at least one completed (odometer-closed) trip,
+// most recent first, and builds/shares the card for whichever one is
+// picked — a day is only "shareable" once at least one leg has a return
+// odometer, since that's what the headline distance is built from.
+const ShareDayModal = ({ logbook, garage, onClose }) => {
+  const [busy, setBusy] = useState(null); // day.key currently being built
+  const [preview, setPreview] = useState(null); // { url } — fallback when Web Share can't take files
+
+  const vehicleName = id => {
+    const v = garage.find(veh => veh.id === id);
+    return v ? `${v.year} ${v.make} ${v.model}` : "Unknown vehicle";
+  };
+
+  const days = groupEntriesByDay(logbook || []).filter(d => d.completed.length > 0);
+
+  const handleShare = async (day) => {
+    setBusy(day.key);
+    setPreview(null);
+    try {
+      const vehicleLabel = day.vehicleIds.length === 1 ? vehicleName(day.vehicleIds[0]) : "Multiple vehicles";
+      const dateLabel = day.date.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' });
+      const blob = await drawTripCard({ distanceKm: day.distanceKm, dateLabel, vehicleLabel, legCount: day.entries.length, trail: day.trail });
+      if (!blob) throw new Error("card render unavailable");
+
+      const file = new File([blob], "chasin-curves-trip.png", { type: "image/png" });
+      const shareText = `${dateLabel} — ${Math.round(day.distanceKm)}km via Chasin' Curves 🏁`;
+
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: "Chasin' Curves", text: shareText });
+      } else {
+        // Desktop browsers and a few mobile ones support navigator.share
+        // for text but not files (or neither) — either way, show the card
+        // and let a manual download cover getting it into the chat.
+        setPreview({ url: URL.createObjectURL(blob) });
+      }
+    } catch (e) {
+      if (e?.name !== "AbortError") alert("Couldn't build the share card — check your connection and try again.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleDownload = () => {
+    if (!preview) return;
+    const a = document.createElement("a");
+    a.href = preview.url; a.download = "chasin-curves-trip.png";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  };
+
+  return (
+    <Modal title="Share a Day" subtitle="Turns a day's logged trips into one shareable card" onClose={onClose}>
+      {days.length === 0 && (
+        <div style={{ textAlign: "center", padding: 30, color: C.dim, fontSize: 12 }}>
+          No completed trips yet — add a return odometer reading to a logged trip before it can be shared.
+        </div>
+      )}
+      {days.map(day => (
+        <div key={day.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: `1px solid ${C.border}`, gap: 10 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 13, color: C.bone }}>{day.date.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' })}</div>
+            <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>
+              {Math.round(day.distanceKm)}km · {day.entries.length} leg{day.entries.length !== 1 ? "s" : ""}{day.trail.length > 0 ? ` · ${day.trail.length} GPS pts` : ""}
+            </div>
+          </div>
+          <Btn size="sm" onClick={() => handleShare(day)} disabled={busy === day.key}>{busy === day.key ? "Building…" : "Share"}</Btn>
+        </div>
+      ))}
+      {preview && (
+        <div style={{ marginTop: 16, textAlign: "center" }}>
+          <img src={preview.url} style={{ maxWidth: "100%", borderRadius: 10, border: `1px solid ${C.border}` }} />
+          <div style={{ fontSize: 11, color: C.dim, margin: "10px 0" }}>This browser can't share an image directly — download it and attach it to your chat.</div>
+          <Btn onClick={handleDownload} style={{ width: "100%" }}>Download Image</Btn>
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
+        <Btn variant="ghost" onClick={onClose}>Close</Btn>
+      </div>
+    </Modal>
+  );
+};
+
 // Persistent banner shown app-wide (not just on the Logbook screen) while
 // a trail is recording — GPS polling lives in App so it survives the user
 // switching screens; if this only lived inside LogbookView it would stop
@@ -1444,6 +1729,7 @@ const ActiveTripBanner = ({ activeTrip, vehicleName, onStop, onDiscard }) => {
 const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPointsEarned }) => {
   const [showLog, setShowLog] = useState(false);
   const [viewingTrail, setViewingTrail] = useState(null);
+  const [sharingDay, setSharingDay] = useState(false);
   const garage = member.garage || [];
   const sorted = [...(logbook || [])].sort((a, b) => b.timestamp - a.timestamp);
 
@@ -1475,7 +1761,10 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPoint
           <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, color: C.champagne }}>Logbook</div>
           <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>Same-day entries only — timestamp is captured automatically.</div>
         </div>
-        <Btn size="sm" onClick={() => setShowLog(true)} disabled={garage.length === 0}>+ Log a Trip</Btn>
+        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <Btn size="sm" variant="ghost" onClick={() => setSharingDay(true)} disabled={garage.length === 0}>📤 Share a Day</Btn>
+          <Btn size="sm" onClick={() => setShowLog(true)} disabled={garage.length === 0}>+ Log a Trip</Btn>
+        </div>
       </div>
 
       {garage.length === 0 && (
@@ -1530,6 +1819,10 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPoint
 
       {viewingTrail && (
         <TrailViewerModal entry={viewingTrail} vehicleName={vehicleName(viewingTrail.vehicleId)} onClose={() => setViewingTrail(null)} />
+      )}
+
+      {sharingDay && (
+        <ShareDayModal logbook={logbook} garage={garage} onClose={() => setSharingDay(false)} />
       )}
     </div>
   );
