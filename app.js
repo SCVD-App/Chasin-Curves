@@ -1401,7 +1401,7 @@ const downsampleForMap = (points, maxPoints = 150) => {
   return out;
 };
 
-const buildStaticMapUrl = (points, width = 1080, height = 660) => {
+const buildStaticMapUrl = (points, width = 864, height = 1080) => {
   const encoded = encodePolyline(downsampleForMap(points));
   const overlay = `path-4+C9A84C-0.9(${encodeURIComponent(encoded)})`;
   return `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/${overlay}/auto/${width}x${height}@2x?padding=50&access_token=${MAPBOX_TOKEN}`;
@@ -1503,6 +1503,7 @@ const drawTripCard = async ({ distanceKm, dateLabel, vehicleLabel, legCount, tra
 
   let startPlace = null, endPlace = null;
   const hasTrail = trail && trail.length >= 2;
+  let mapDrawn = false;
 
   if (hasTrail) {
     const mapUrl = buildStaticMapUrl(trail);
@@ -1513,12 +1514,20 @@ const drawTripCard = async ({ distanceKm, dateLabel, vehicleLabel, legCount, tra
     ]);
     startPlace = sp; endPlace = ep;
     if (mapImg) {
-      ctx.drawImage(mapImg, 0, 0, 1080, 660);
-      const grad = ctx.createLinearGradient(0, 520, 0, 660);
-      grad.addColorStop(0, "rgba(13,13,13,0)");
-      grad.addColorStop(1, C.midnight);
+      // Full-bleed map, same "photo wallpaper + caption" treatment as the
+      // Garage vehicle header: the image fills the whole card, a top-to-
+      // bottom gradient dips lighter through the middle so the route stays
+      // visible, then darkens hard toward the bottom so the stats read as
+      // a caption sitting on the photo rather than a separate panel below it.
+      ctx.drawImage(mapImg, 0, 0, 1080, 1350);
+      const grad = ctx.createLinearGradient(0, 0, 0, 1350);
+      grad.addColorStop(0, "rgba(0,0,0,0.45)");
+      grad.addColorStop(0.38, "rgba(0,0,0,0.12)");
+      grad.addColorStop(0.68, "rgba(13,13,13,0.55)");
+      grad.addColorStop(1, "rgba(13,13,13,0.97)");
       ctx.fillStyle = grad;
-      ctx.fillRect(0, 520, 1080, 140);
+      ctx.fillRect(0, 0, 1080, 1350);
+      mapDrawn = true;
     } else {
       drawRoadLines(ctx, cx, 330);
     }
@@ -1526,37 +1535,53 @@ const drawTripCard = async ({ distanceKm, dateLabel, vehicleLabel, legCount, tra
     drawRoadLines(ctx, cx, 330);
   }
 
-  const wordmarkY = hasTrail ? 740 : 470;
+  // Same soft drop-shadow the app gives text captioned on a photo
+  // (VehicleDetail's hero header) — keeps it legible over whatever the
+  // map happens to look like underneath, without needing a harder gradient
+  // that would hide the route entirely.
+  const shadowText = (text, x, y) => {
+    ctx.shadowColor = "rgba(0,0,0,0.8)";
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 3;
+    ctx.fillText(text, x, y);
+    ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  };
+
   ctx.textAlign = "center";
+
+  // Wordmark — pinned near the top, sitting directly on the photo when
+  // there is one, the same way the app's own header sits over the map.
+  const wordmarkY = mapDrawn ? 90 : 470;
   ctx.fillStyle = C.champagne;
   ctx.font = "700 54px 'Cormorant Garamond'";
-  ctx.fillText("Chasin’ Curves", cx, wordmarkY);
-
-  ctx.fillStyle = C.dim;
+  shadowText("Chasin’ Curves", cx, wordmarkY);
+  ctx.fillStyle = mapDrawn ? "rgba(245,243,238,0.75)" : C.dim;
   ctx.font = "600 16px 'Josefin Sans'";
-  ctx.fillText("R O A D S ,   R I V E R S   &   R I F F S", cx, wordmarkY + 34);
+  shadowText("R O A D S ,   R I V E R S   &   R I F F S", cx, wordmarkY + 30);
 
-  const midY = hasTrail ? 950 : 680;
+  // Stats — pinned toward the bottom, inside the heavily-darkened zone,
+  // the same way a vehicle's name sits captioned on its hero photo.
+  const midY = mapDrawn ? 1010 : 680;
   ctx.fillStyle = C.champagne;
   ctx.font = "700 150px 'Cormorant Garamond'";
-  ctx.fillText(`${Math.round(distanceKm)}`, cx, midY);
+  shadowText(`${Math.round(distanceKm)}`, cx, midY);
   ctx.fillStyle = C.champagneLight;
   ctx.font = "600 30px 'Josefin Sans'";
-  ctx.fillText("KILOMETRES", cx, midY + 40);
+  shadowText("KILOMETRES", cx, midY + 40);
 
   ctx.fillStyle = C.bone;
   ctx.font = "400 32px 'Josefin Sans'";
-  ctx.fillText(dateLabel, cx, midY + 110);
+  shadowText(dateLabel, cx, midY + 110);
 
   if (startPlace && endPlace) {
-    ctx.fillStyle = C.muted;
+    ctx.fillStyle = "rgba(245,243,238,0.8)";
     ctx.font = "400 26px 'Josefin Sans'";
-    ctx.fillText(`${startPlace} → ${endPlace}`, cx, midY + 155);
+    shadowText(`${startPlace} → ${endPlace}`, cx, midY + 155);
   }
 
-  ctx.fillStyle = C.dim;
+  ctx.fillStyle = "rgba(245,243,238,0.55)";
   ctx.font = "400 22px 'Josefin Sans'";
-  ctx.fillText(`${vehicleLabel} · ${legCount} leg${legCount !== 1 ? "s" : ""}`, cx, 1300);
+  shadowText(`${vehicleLabel} · ${legCount} leg${legCount !== 1 ? "s" : ""}`, cx, 1300);
 
   return new Promise(resolve => canvas.toBlob(blob => resolve(blob), "image/png", 0.95));
 };
