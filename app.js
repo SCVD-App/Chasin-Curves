@@ -426,6 +426,28 @@ const getTier = pts => TIERS.find(t => pts >= t.min && pts <= t.max) || TIERS[0]
 
 const fmtDate = d => new Date(d).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
 
+// Session 16c — traced from a real Cloudflare Worker log on a beta tester's
+// "trip disappeared" report: her user-agent carried Facebook's FBAN/FBIOS
+// markers, meaning she was inside Facebook's in-app WebView, not standalone
+// Safari. These embedded browsers are well documented to evict
+// localStorage aggressively (especially once the host app backgrounds),
+// don't reliably hold a geolocation permission grant for the page's whole
+// life, and on iOS don't implement the Screen Wake Lock API at all — any
+// one of those can silently kill a trail mid-recording. There's no
+// reliable way to force an escape to the real browser from JS, so this
+// only detects and warns; the fix is the tester leaving manually.
+const IN_APP_BROWSER_SIGNATURES = [
+  { test: /FBAN|FBAV|FBIOS|FB_IAB/i, name: "Facebook" },
+  { test: /Instagram/i, name: "Instagram" },
+  { test: /\bLine\//i, name: "Line" },
+  { test: /MicroMessenger/i, name: "WeChat" },
+];
+const detectInAppBrowser = () => {
+  const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+  const hit = IN_APP_BROWSER_SIGNATURES.find(sig => sig.test.test(ua));
+  return hit ? hit.name : null;
+};
+
 // ─── SHARED COMPONENTS ───────────────────────────────────────
 
 const Btn = ({ children, onClick, variant = "primary", size = "md", style: sx = {}, disabled }) => {
@@ -1339,8 +1361,12 @@ const LogTripModal = ({ member, logbook, onClose, onSubmit }) => {
     }
     setSaving(true);
     try {
-      await onSubmit(vehicle.id, reading, trackGps);
-      onClose();
+      // Session 16: onClose() used to fire unconditionally here, even when
+      // onSubmit had swallowed an error internally — a failed log attempt
+      // closed the form with only an easily-missed alert as the only trace.
+      // Now it only closes once the trip is actually confirmed logged.
+      const ok = await onSubmit(vehicle.id, reading, trackGps);
+      if (ok) onClose();
     } finally {
       setSaving(false);
     }
@@ -1838,6 +1864,63 @@ const ActiveTripBanner = ({ activeTrip, vehicleName, onStop, onDiscard }) => {
   );
 };
 
+// Session 16 — the confirmation ActiveTripBanner never had. Stopping a trip
+// used to just clear the banner with no signal either way, which a real
+// beta tester read as the whole trip vanishing even though it had saved
+// correctly. Shown once, briefly, right after a successful save; also the
+// one place that tells the truth if the trail itself came back empty
+// (GPS never got a fix all trip) instead of silently saving a 0-point trail.
+const TripSavedNotice = ({ notice, onDismiss }) => {
+  if (!notice) return null;
+  return (
+    <div style={{ padding: "10px 16px", background: `${C.champagne}15`, borderBottom: `1px solid ${C.champagne}44`, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+      <span style={{ fontSize: 16 }}>✅</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12, color: C.champagne, fontWeight: 700 }}>Trip saved to your Logbook</div>
+        <div style={{ fontSize: 10, color: C.dim, marginTop: 1 }}>
+          {notice.points > 0
+            ? `${notice.points} GPS point${notice.points !== 1 ? "s" : ""} recorded`
+            : "No GPS points recorded this trip — just the odometer reading was saved"}
+        </div>
+      </div>
+      <Btn size="sm" variant="ghost" onClick={onDismiss}>Dismiss</Btn>
+    </div>
+  );
+};
+
+// Session 16c — see detectInAppBrowser above for why this exists. Shown
+// both pre-login (LoginScreen) and post-login (App shell), since the
+// storage-eviction / GPS risk applies for as long as the tab stays open
+// inside the host app, not just at sign-in.
+const InAppBrowserWarning = ({ appName, onDismiss }) => {
+  const [copied, setCopied] = useState(false);
+  if (!appName) return null;
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch { /* clipboard API unavailable in this browser — button just won't confirm */ }
+  };
+  return (
+    <div style={{ padding: "12px 16px", background: `${C.red}18`, borderBottom: `1px solid ${C.red}55`, display: "flex", flexDirection: "column", gap: 8, flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <span style={{ fontSize: 16 }}>⚠️</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, color: C.red, fontWeight: 700 }}>You're in {appName}'s built-in browser</div>
+          <div style={{ fontSize: 10, color: C.dim, marginTop: 2, lineHeight: 1.5 }}>
+            It can lose GPS trails and sign you out without warning, especially if {appName} goes to the background mid-trip. For reliable trip recording, open this page in Safari or Chrome instead.
+          </div>
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8, paddingLeft: 26 }}>
+        <Btn size="sm" onClick={copyLink}>{copied ? "Link copied ✓" : "Copy link to open elsewhere"}</Btn>
+        <Btn size="sm" variant="ghost" onClick={onDismiss}>Dismiss</Btn>
+      </div>
+    </div>
+  );
+};
+
 const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPointsEarned }) => {
   const [showLog, setShowLog] = useState(false);
   const [viewingTrail, setViewingTrail] = useState(null);
@@ -1851,8 +1934,9 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPoint
   };
 
   const handleSubmit = async (vehicleId, odometerStart, trackGps) => {
-    await onLogEntry(vehicleId, odometerStart, trackGps);
-    onPointsEarned("log_trip");
+    const ok = await onLogEntry(vehicleId, odometerStart, trackGps);
+    if (ok) onPointsEarned("log_trip"); // Session 16: was firing even on a failed log attempt
+    return ok;
   };
 
   const handleReturnOdo = (entry) => {
@@ -2477,7 +2561,7 @@ const AddRoadModal = ({ onClose, onAdd, onPointsEarned, currentUser }) => {
 // ─── LOGIN SCREEN ─────────────────────────────────────────────
 // v3.0: No more ScreenshotPrompt/username-suggestions — email IS the
 // recovery mechanism now, so there's nothing to lose and nothing to screenshot.
-const LoginScreen = ({ onRequestCode, onVerifyCode, onResend, step, loading, error, inviterName }) => {
+const LoginScreen = ({ onRequestCode, onVerifyCode, onResend, step, loading, error, inviterName, inAppBrowser, onDismissInAppWarning }) => {
   // step: "email" | "code"
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -2489,7 +2573,9 @@ const LoginScreen = ({ onRequestCode, onVerifyCode, onResend, step, loading, err
   const submitCode = () => { if (cleanCode.length === 6 && !loading) onVerifyCode(cleanEmail, cleanCode); };
 
   return (
-    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100dvh", background:C.midnight, padding:32, gap:0 }}>
+    <div style={{ display:"flex", flexDirection:"column", height:"100dvh", background:C.midnight }}>
+      {inAppBrowser && <InAppBrowserWarning appName={inAppBrowser} onDismiss={onDismissInAppWarning} />}
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", flex:1, minHeight:0, overflowY:"auto", padding:32, gap:0 }}>
       {/* Invite banner — purely cosmetic, from a ?invite= query param on a
           shared link (see ProfileView's "Invite a Mate"). Never trusted for
           anything beyond display: it's just the inviter's own display name,
@@ -2586,6 +2672,7 @@ const LoginScreen = ({ onRequestCode, onVerifyCode, onResend, step, loading, err
       </div>
 
       <div style={{ marginTop:20, fontSize:10, color:"#2a2a2a", textAlign:"center", letterSpacing:"0.08em" }}>NO ADS · NO AUTO-RENEWAL · NO NONSENSE</div>
+      </div>
     </div>
   );
 };
@@ -2600,6 +2687,15 @@ const App = () => {
   // the user switches to another screen — a component-local interval
   // would get torn down the moment LogbookView unmounted.
   const [activeTrip, setActiveTrip] = useState(() => getStoredActiveTrip());
+  // Session 16: a successful stop-and-save used to just clear activeTrip,
+  // which meant the banner silently vanished with zero confirmation — a
+  // real beta tester (Sandy, mid-trip) read that as "the trip disappeared"
+  // even though the entry had in fact saved. This notice replaces silence
+  // with an explicit "saved" message, and doubles as an honest signal if
+  // the trail itself came back empty (permission denied throughout, etc.)
+  // rather than letting a 0-point trail save invisibly.
+  const [tripSavedNotice, setTripSavedNotice] = useState(null);
+  const tripSavedTimerRef = useRef(null);
   const gpsIntervalRef = useRef(null);
   // Session 15b: a dedicated second device (e.g. Chasin' Curves mounted for
   // trail logging while turn-by-turn runs on the driver's main phone) is the
@@ -2626,6 +2722,10 @@ const App = () => {
     try { return new URLSearchParams(window.location.search).get("invite") || null; }
     catch { return null; }
   });
+  // Session 16c: static for the life of the tab (the UA doesn't change),
+  // so a lazy-init read once is enough — no need to watch for changes.
+  const [inAppBrowser] = useState(() => detectInAppBrowser());
+  const [inAppWarningDismissed, setInAppWarningDismissed] = useState(false);
 
   // ── Sign out — clears session, forces back to login ────────
   // Stops any in-flight GPS polling too — otherwise a stale interval would
@@ -2634,8 +2734,10 @@ const App = () => {
   const handleSignOut = useCallback(() => {
     if (gpsIntervalRef.current) { clearInterval(gpsIntervalRef.current); gpsIntervalRef.current = null; }
     if (wakeLockRef.current) { wakeLockRef.current.release().catch(() => {}); wakeLockRef.current = null; }
+    if (tripSavedTimerRef.current) { clearTimeout(tripSavedTimerRef.current); tripSavedTimerRef.current = null; }
     setStoredActiveTrip(null);
     setActiveTrip(null);
+    setTripSavedNotice(null);
     clearSession();
     setCurrentUser(null);
     setPointsLog([]);
@@ -2861,6 +2963,9 @@ const App = () => {
       setLogbook(prev => prev.map(e => e.id === activeTrip.entryId ? { ...e, trail: activeTrip.points } : e));
       setStoredActiveTrip(null);
       setActiveTrip(null);
+      if (tripSavedTimerRef.current) clearTimeout(tripSavedTimerRef.current);
+      setTripSavedNotice({ points: activeTrip.points.length });
+      tripSavedTimerRef.current = setTimeout(() => setTripSavedNotice(null), 8000);
     } catch (e) {
       if (e?.authFailed) handleSignOut();
       // Otherwise leave it stopped-but-unsaved in localStorage — the banner's
@@ -2876,17 +2981,26 @@ const App = () => {
   }, [releaseWakeLock]);
 
   // ── Logbook — log a trip / attach a return odometer reading ─
+  // Session 16: now reports success/failure back to the caller (previously
+  // errors were swallowed here — alert-and-return — while the modal above
+  // it always called onClose() regardless, so a failed log attempt closed
+  // the form silently with only an easily-missed browser alert as the only
+  // trace. Returning a boolean lets the modal actually stay open on failure.
   const handleLogTrip = useCallback(async (vehicleId, odometerStart, trackGps) => {
-    if (!currentUser) return;
+    if (!currentUser) return false;
     try {
       const res = await api.postLogEntry(currentUser.id, { vehicleId, odometerStart });
       if (res?.entry) {
         setLogbook(prev => [...prev, res.entry]);
         if (trackGps) startTrailRecording(res.entry, vehicleId);
+        return true;
       }
+      alert("Couldn't log the trip — try again.");
+      return false;
     } catch (e) {
       if (e?.authFailed) handleSignOut();
       else alert(`Couldn't log the trip: ${e.message}`);
+      return false;
     }
   }, [currentUser, handleSignOut, startTrailRecording]);
 
@@ -2930,6 +3044,8 @@ const App = () => {
       loading={loginLoading}
       error={loginError}
       inviterName={inviterName}
+      inAppBrowser={inAppWarningDismissed ? null : inAppBrowser}
+      onDismissInAppWarning={() => setInAppWarningDismissed(true)}
     />;
   }
 
@@ -2960,6 +3076,10 @@ const App = () => {
         </div>
       </header>
 
+      {!inAppWarningDismissed && (
+        <InAppBrowserWarning appName={inAppBrowser} onDismiss={() => setInAppWarningDismissed(true)} />
+      )}
+
       <PitPassBanner member={currentUser} onDismiss={() => {
         const activated = new Date().toISOString();
         updateCurrentUser({ ...currentUser, pitPassActivated: activated });
@@ -2973,6 +3093,13 @@ const App = () => {
         })()}
         onStop={handleStopTrip}
         onDiscard={discardTrail}
+      />
+      <TripSavedNotice
+        notice={tripSavedNotice}
+        onDismiss={() => {
+          if (tripSavedTimerRef.current) { clearTimeout(tripSavedTimerRef.current); tripSavedTimerRef.current = null; }
+          setTripSavedNotice(null);
+        }}
       />
 
       {screen === "roads" && !showRoadDetail && (
