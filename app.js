@@ -397,11 +397,37 @@ const setStoredActiveTrip = (trip) => {
 // One GPS fix, resolved to null (never rejected) on any failure so a
 // denied permission or a timeout just means "this poll got no point",
 // not a crashed trip.
-const pollGpsPoint = () => new Promise(resolve => {
-  if (!navigator.geolocation) { resolve(null); return; }
+//
+// Session 16i: `label`, when given, logs WHY a fix failed. Added after a
+// real beta day where every single trip — laptop and phone, "Log Trip
+// Now" and "+ Return Odo" alike — came back with no startCoord/endCoord
+// at all, and the app itself gave no clue why: this poller has always
+// swallowed failures completely silently, so "it didn't work" was
+// genuinely unanswerable without instrumentation. Deliberately opt-in per
+// call site: the continuous GPS Trail poller below still calls this
+// unlabeled and stays silent, since it already tolerates missed polls by
+// design and would otherwise spam the console with the same warning
+// every ~20s for an entire multi-hour drive with patchy signal. The two
+// one-off fixes (trip start, trip finish) pass a label and are the ones
+// actually worth seeing fail.
+const pollGpsPoint = (label) => new Promise(resolve => {
+  if (!navigator.geolocation) {
+    if (label) console.warn(`[Chasin' Curves] ${label}: geolocation isn't available in this browser.`);
+    resolve(null);
+    return;
+  }
   navigator.geolocation.getCurrentPosition(
     pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, t: Date.now() }),
-    () => resolve(null),
+    (err) => {
+      if (label) {
+        const reason = err?.code === 1 ? "permission denied — check this site's Location setting in your browser/device"
+          : err?.code === 2 ? "position unavailable — check that Location/GPS is turned on for this device and browser"
+          : err?.code === 3 ? "timed out waiting for a fix"
+          : (err?.message || "unknown error");
+        console.warn(`[Chasin' Curves] ${label}: GPS fix failed (${reason}).`, err);
+      }
+      resolve(null);
+    },
     { enableHighAccuracy: false, timeout: 15000, maximumAge: 10000 }
   );
 });
@@ -2219,7 +2245,7 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPoint
     // Session 16e: same one-off GPS fix as trip start, taken now at
     // hand-back — gives the Trip Postcard a real finish pin without
     // needing the full GPS Trail feature to have been running.
-    const point = await pollGpsPoint();
+    const point = await pollGpsPoint("trip finish pin");
     const endCoord = point ? { lat: point.lat, lng: point.lng } : null;
     onAddReturnOdometer(entry.id, n, endCoord);
   };
@@ -3273,7 +3299,7 @@ const App = () => {
       // lets a Trip Postcard draw a real start→finish route even for a trip
       // logged with a plain odometer reading, not just one recorded live.
       // Denied/unavailable/slow location never blocks logging the trip.
-      const point = await pollGpsPoint();
+      const point = await pollGpsPoint("trip start pin");
       const startCoord = point ? { lat: point.lat, lng: point.lng } : null;
       const res = await api.postLogEntry(currentUser.id, { vehicleId, odometerStart, ...(startCoord ? { startCoord } : {}) });
       if (res?.entry) {
