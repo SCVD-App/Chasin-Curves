@@ -492,6 +492,13 @@ export default {
     // once when the trip is stopped (not streamed point-by-point), so this
     // stays the same "one settle-up write" shape as the odometer case.
     const MAX_TRAIL_POINTS = 1500; // ~8+ hours at a 20s poll — generous, not unbounded
+    // Session 16e — a single {lat, lng} fix (no `t`, unlike a trail point):
+    // used for both the POST's startCoord below and this PUT's endCoord.
+    // These are one-off fixes taken at "Log Trip Now" and "+ Return Odo"
+    // respectively, not a continuous recording — that's still the separate,
+    // opt-in `trail` field above. Added so a Trip Postcard has a real
+    // start→finish route to draw even for trips never recorded live.
+    const isValidCoord = c => c && typeof c.lat === 'number' && typeof c.lng === 'number';
     if (logbookEntryMatch && method === 'PUT') {
       const userId = cleanEmail(logbookEntryMatch[1]);
       const entryId = logbookEntryMatch[2];
@@ -502,7 +509,8 @@ export default {
       const body = await request.json();
       const hasOdo = typeof body.odometerEnd === 'number';
       const hasTrail = Array.isArray(body.trail);
-      if (!hasOdo && !hasTrail) return err('odometerEnd (number) and/or trail (array) required');
+      const hasEndCoord = body.endCoord !== undefined;
+      if (!hasOdo && !hasTrail && !hasEndCoord) return err('odometerEnd (number), trail (array), and/or endCoord required');
 
       if (hasTrail) {
         if (body.trail.length > MAX_TRAIL_POINTS) return err(`trail exceeds ${MAX_TRAIL_POINTS} points`);
@@ -511,6 +519,7 @@ export default {
         );
         if (!validShape) return err('Each trail point needs numeric lat, lng, and t');
       }
+      if (hasEndCoord && !isValidCoord(body.endCoord)) return err('endCoord needs numeric lat and lng');
 
       const entries = JSON.parse(await env.CURVES_KV.get(`logbook:${userId}`) || '[]');
       const idx = entries.findIndex(e => e.id === entryId);
@@ -524,6 +533,9 @@ export default {
       }
       if (hasTrail) {
         entries[idx].trail = body.trail;
+      }
+      if (hasEndCoord) {
+        entries[idx].endCoord = { lat: body.endCoord.lat, lng: body.endCoord.lng };
       }
 
       await env.CURVES_KV.put(`logbook:${userId}`, JSON.stringify(entries));
@@ -545,6 +557,10 @@ export default {
         const body = await request.json();
         if (!body.vehicleId) return err('vehicleId required');
         if (typeof body.odometerStart !== 'number') return err('odometerStart (number) required');
+        // Session 16e: optional one-off GPS fix taken client-side the
+        // instant "Log Trip Now" is tapped — see isValidCoord's comment above.
+        const hasStartCoord = body.startCoord !== undefined;
+        if (hasStartCoord && !isValidCoord(body.startCoord)) return err('startCoord needs numeric lat and lng');
 
         const entries = JSON.parse(await env.CURVES_KV.get(`logbook:${id}`) || '[]');
         const entry = {
@@ -559,6 +575,7 @@ export default {
           timestamp: Date.now(),
           odometerStart: body.odometerStart,
           odometerEnd: null,
+          ...(hasStartCoord ? { startCoord: { lat: body.startCoord.lat, lng: body.startCoord.lng } } : {}),
         };
         entries.push(entry);
         await env.CURVES_KV.put(`logbook:${id}`, JSON.stringify(entries));

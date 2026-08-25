@@ -93,7 +93,7 @@ const api = {
   // ── Logbook — session-authenticated, session-owner-only (same as garage) ──
   getLogbook: (id) => authedFetch(`${API}/logbook/${id}`),
   postLogEntry: (id, entry) => authedFetch(`${API}/logbook/${id}`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(entry) }),
-  addReturnOdometer: (id, entryId, odometerEnd) => authedFetch(`${API}/logbook/${id}/${entryId}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ odometerEnd }) }),
+  addReturnOdometer: (id, entryId, odometerEnd, endCoord) => authedFetch(`${API}/logbook/${id}/${entryId}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ odometerEnd, ...(endCoord ? { endCoord } : {}) }) }),
   saveTrail: (id, entryId, trail) => authedFetch(`${API}/logbook/${id}/${entryId}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ trail }) }),
 
   getTrips: () => fetch(`${API}/trips`).then(r => r.json()),
@@ -1693,9 +1693,22 @@ const groupEntriesByDay = (entries) => {
     .map(([key, dayEntries]) => {
       const completed = dayEntries.filter(e => e.odometerEnd != null);
       const distanceKm = completed.reduce((sum, e) => sum + (e.odometerEnd - e.odometerStart), 0);
+      // Session 16e: a recorded GPS Trail (many points) is preferred when
+      // it exists; a leg with no trail but a logged start + finish pin
+      // falls back to a straight two-point "trail" between them, so the
+      // Trip Postcard still has a real route to draw instead of nothing.
       const trail = dayEntries
         .slice().sort((a, b) => a.timestamp - b.timestamp)
-        .flatMap(e => e.trail || []);
+        .flatMap(e => {
+          if (e.trail?.length > 0) return e.trail;
+          if (e.startCoord && e.endCoord) {
+            return [
+              { lat: e.startCoord.lat, lng: e.startCoord.lng, t: e.timestamp },
+              { lat: e.endCoord.lat, lng: e.endCoord.lng, t: e.timestamp },
+            ];
+          }
+          return [];
+        });
       const vehicleIds = Array.from(new Set(dayEntries.map(e => e.vehicleId)));
       return { key, date: new Date(dayEntries[0].timestamp), entries: dayEntries, completed, distanceKm, trail, vehicleIds };
     })
@@ -2132,7 +2145,7 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPoint
     return ok;
   };
 
-  const handleReturnOdo = (entry) => {
+  const handleReturnOdo = async (entry) => {
     const val = prompt("Return odometer reading?");
     if (val === null) return;
     const n = Number(val);
@@ -2140,7 +2153,12 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPoint
       alert("Enter a number no lower than the start reading.");
       return;
     }
-    onAddReturnOdometer(entry.id, n);
+    // Session 16e: same one-off GPS fix as trip start, taken now at
+    // hand-back — gives the Trip Postcard a real finish pin without
+    // needing the full GPS Trail feature to have been running.
+    const point = await pollGpsPoint();
+    const endCoord = point ? { lat: point.lat, lng: point.lng } : null;
+    onAddReturnOdometer(entry.id, n, endCoord);
   };
 
   return (
@@ -2182,6 +2200,11 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPoint
                 <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
                   Odo {e.odometerStart}{e.odometerEnd != null ? ` → ${e.odometerEnd}` : ""}
                 </div>
+                {!(e.trail?.length > 0) && (e.startCoord || e.endCoord) && (
+                  <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>
+                    📍 {e.startCoord && e.endCoord ? "Start + finish pins captured" : e.startCoord ? "Start pin captured" : "Finish pin captured"}
+                  </div>
+                )}
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end", flexShrink: 0 }}>
                 {e.odometerEnd == null && (
@@ -3182,7 +3205,14 @@ const App = () => {
   const handleLogTrip = useCallback(async (vehicleId, odometerStart, trackGps) => {
     if (!currentUser) return false;
     try {
-      const res = await api.postLogEntry(currentUser.id, { vehicleId, odometerStart });
+      // Session 16e: a single, one-off GPS fix taken right now — separate
+      // from the opt-in continuous GPS Trail below (trackGps). This is what
+      // lets a Trip Postcard draw a real start→finish route even for a trip
+      // logged with a plain odometer reading, not just one recorded live.
+      // Denied/unavailable/slow location never blocks logging the trip.
+      const point = await pollGpsPoint();
+      const startCoord = point ? { lat: point.lat, lng: point.lng } : null;
+      const res = await api.postLogEntry(currentUser.id, { vehicleId, odometerStart, ...(startCoord ? { startCoord } : {}) });
       if (res?.entry) {
         setLogbook(prev => [...prev, res.entry]);
         if (trackGps) startTrailRecording(res.entry, vehicleId);
@@ -3197,11 +3227,11 @@ const App = () => {
     }
   }, [currentUser, handleSignOut, startTrailRecording]);
 
-  const handleAddReturnOdometer = useCallback(async (entryId, odometerEnd) => {
+  const handleAddReturnOdometer = useCallback(async (entryId, odometerEnd, endCoord) => {
     if (!currentUser) return;
     try {
-      await api.addReturnOdometer(currentUser.id, entryId, odometerEnd);
-      setLogbook(prev => prev.map(e => e.id === entryId ? { ...e, odometerEnd } : e));
+      await api.addReturnOdometer(currentUser.id, entryId, odometerEnd, endCoord);
+      setLogbook(prev => prev.map(e => e.id === entryId ? { ...e, odometerEnd, ...(endCoord ? { endCoord } : {}) } : e));
     } catch (e) {
       if (e?.authFailed) handleSignOut();
       else alert(`Couldn't save the return odometer: ${e.message}`);
