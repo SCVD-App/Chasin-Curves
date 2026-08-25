@@ -1514,10 +1514,100 @@ const downsampleForMap = (points, maxPoints = 150) => {
   return out;
 };
 
-const buildStaticMapUrl = (points, width = 864, height = 1080) => {
-  const encoded = encodePolyline(downsampleForMap(points));
-  const overlay = `path-4+C9A84C-0.9(${encodeURIComponent(encoded)})`;
-  return `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/${overlay}/auto/${width}x${height}@2x?padding=50&access_token=${MAPBOX_TOKEN}`;
+// Session 16d — Trip Postcard v2 (vehicle photo hero + faded map + a
+// hand-drawn route on top, instead of baking the route into the Mapbox
+// image itself). That needs the base map and our own route line to share
+// one exact bbox — Mapbox's "auto" framing picks its own padding/zoom
+// internally and won't tell us what it chose, so we compute an explicit
+// bbox ourselves and pass it to both the map request and the projection
+// math below. A naive bbox breaks this though: Mapbox can't stretch x and
+// y independently (that would visibly distort the roads), so if our bbox's
+// aspect ratio doesn't match the card's 1080x1350, Mapbox silently shows
+// more area on one axis to compensate — and then our hand-drawn route,
+// projected against the un-adjusted bbox, drifts from the real roads
+// underneath it. correctBBoxAspect grows (never shrinks) whichever axis is
+// short so the bbox already matches the card's aspect ratio before it's
+// sent anywhere, so there's nothing left for Mapbox to silently adjust.
+const CARD_W = 1080, CARD_H = 1350;
+const BBOX_PADDING_FRACTION = 0.14; // extra margin around the trail's bounding box
+
+const toRad = (d) => (d * Math.PI) / 180;
+const toDeg = (r) => (r * 180) / Math.PI;
+// Standard Web Mercator y — matches how every one of Mapbox's raster
+// styles projects latitude, so this is the correct transform to use, not
+// an approximation of it.
+const mercatorY = (lat) => Math.log(Math.tan(Math.PI / 4 + toRad(lat) / 2));
+const mercatorYInverse = (y) => toDeg(2 * Math.atan(Math.exp(y)) - Math.PI / 2);
+
+const computeBBox = (trail) => {
+  let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+  for (const p of trail) {
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lng < minLng) minLng = p.lng;
+    if (p.lng > maxLng) maxLng = p.lng;
+  }
+  // A dead-straight trip (or a 2-point trail) can give zero width/height,
+  // which breaks the projection below — enforce a sane minimum span.
+  const latSpan = Math.max(maxLat - minLat, 0.01);
+  const lngSpan = Math.max(maxLng - minLng, 0.01);
+  const latPad = latSpan * BBOX_PADDING_FRACTION;
+  const lngPad = lngSpan * BBOX_PADDING_FRACTION;
+  return {
+    minLat: minLat - latPad, maxLat: maxLat + latPad,
+    minLng: minLng - lngPad, maxLng: maxLng + lngPad,
+  };
+};
+
+// Grows whichever axis is "too short" in Web Mercator units (where x and y
+// share the same scale, unlike raw degrees) so the bbox's projected aspect
+// ratio exactly matches the target canvas. Only ever grows, never crops —
+// the padded bbox from computeBBox is always still fully contained.
+const correctBBoxAspect = (bbox, targetAspect) => {
+  const xSpan = toRad(bbox.maxLng - bbox.minLng); // Mercator x unit = longitude in radians
+  const yMercMin = mercatorY(bbox.minLat);
+  const yMercMax = mercatorY(bbox.maxLat);
+  const ySpan = yMercMax - yMercMin;
+  const currentAspect = xSpan / ySpan;
+
+  if (currentAspect < targetAspect) {
+    // too tall/narrow (most long highway legs) -> widen longitude, keep latitude as-is
+    const xSpanNew = targetAspect * ySpan;
+    const centerLng = (bbox.minLng + bbox.maxLng) / 2;
+    const halfSpanDeg = toDeg(xSpanNew) / 2;
+    return { minLat: bbox.minLat, maxLat: bbox.maxLat, minLng: centerLng - halfSpanDeg, maxLng: centerLng + halfSpanDeg };
+  } else if (currentAspect > targetAspect) {
+    // too wide/short -> widen latitude, keep longitude as-is
+    const ySpanNew = xSpan / targetAspect;
+    const yMercCenter = (yMercMin + yMercMax) / 2;
+    const halfSpanMerc = ySpanNew / 2;
+    return {
+      minLat: mercatorYInverse(yMercCenter - halfSpanMerc),
+      maxLat: mercatorYInverse(yMercCenter + halfSpanMerc),
+      minLng: bbox.minLng, maxLng: bbox.maxLng,
+    };
+  }
+  return bbox;
+};
+
+// Projects a lat/lng into card pixel space using the SAME bbox the base
+// map was requested with, so the hand-drawn route lines up with the roads
+// Mapbox rendered underneath it.
+const projectPoint = (lng, lat, bbox, width, height) => {
+  const x = ((lng - bbox.minLng) / (bbox.maxLng - bbox.minLng)) * width;
+  const yMerc = mercatorY(lat);
+  const yMercMin = mercatorY(bbox.minLat);
+  const yMercMax = mercatorY(bbox.maxLat);
+  const y = height - ((yMerc - yMercMin) / (yMercMax - yMercMin)) * height;
+  return [x, y];
+};
+
+// Plain styled map + labels only, at an explicit bbox — no path overlay,
+// since the route is drawn by hand now (see drawTripCard) so it can stay
+// bold and fully opaque even where the map underneath fades toward the edges.
+const buildBaseMapUrl = (bbox, width = CARD_W, height = CARD_H) => {
+  const bboxStr = `[${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}]`;
+  return `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/${bboxStr}/${width}x${height}@2x?access_token=${MAPBOX_TOKEN}`;
 };
 
 // Best-effort reverse geocode for a friendly "Robe, SA → Naracoorte, SA"
@@ -1534,11 +1624,23 @@ const reverseGeocodePlace = async (lat, lng) => {
   } catch { return null; }
 };
 
-const loadMapImage = (url) => new Promise((resolve) => {
+// Generic cross-origin image loader for canvas use — crossOrigin is
+// required so a successfully-drawn image doesn't taint the canvas and
+// break canvas.toBlob() later. `label` is purely diagnostic: a failed
+// load degrades the card gracefully either way (this just resolves null,
+// callers skip that layer), but a silent, permanent "why doesn't the
+// photo ever show up" is worse than a console warning that says exactly
+// which layer didn't load and why (almost always a CORS failure on the
+// image host, not a bug in this code) — check devtools console after a
+// share if a layer seems to be missing.
+const loadImageEl = (url, label) => new Promise((resolve) => {
   const img = new Image();
   img.crossOrigin = "anonymous";
   img.onload = () => resolve(img);
-  img.onerror = () => resolve(null);
+  img.onerror = () => {
+    if (label) console.warn(`[Chasin' Curves] ${label} failed to load for the trip card — check that its host sends CORS headers (Access-Control-Allow-Origin) for cross-origin image loads. Falling back gracefully.`, url);
+    resolve(null);
+  };
   img.src = url;
 });
 
@@ -1601,57 +1703,129 @@ const groupEntriesByDay = (entries) => {
 };
 
 // Renders the actual card and resolves a PNG Blob (null only if the
-// canvas itself is unavailable) — a failed map fetch or geocode just
-// means a plainer, still-branded card, never a thrown error.
-const drawTripCard = async ({ distanceKm, dateLabel, vehicleLabel, legCount, trail }) => {
+// canvas itself is unavailable) — a failed map fetch, photo fetch, or
+// geocode just means a plainer, still-branded card, never a thrown error.
+//
+// Session 16d layer order, back to front:
+//   vehicle photo (sepia, full bleed)   — optional, via heroUrl
+//   → dark base scrim                  — always present under a photo,
+//                                         protects text/route even before
+//                                         the map's own fade is applied
+//   → base map, faded toward the edges — optional, needs a trail
+//   → hand-drawn route, bold, on top   — optional, needs a trail
+//   → text captions                    — unchanged positions/content
+// heroUrl is new; everything else keeps the same call shape as before.
+const drawTripCard = async ({ distanceKm, dateLabel, vehicleLabel, legCount, trail, heroUrl }) => {
   await ensureFontsLoaded();
   const canvas = document.createElement("canvas");
-  canvas.width = 1080; canvas.height = 1350;
+  canvas.width = CARD_W; canvas.height = CARD_H;
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
-  const cx = 540;
+  const cx = CARD_W / 2;
 
   ctx.fillStyle = C.midnight;
-  ctx.fillRect(0, 0, 1080, 1350);
+  ctx.fillRect(0, 0, CARD_W, CARD_H);
 
-  let startPlace = null, endPlace = null;
   const hasTrail = trail && trail.length >= 2;
+  let startPlace = null, endPlace = null;
   let mapDrawn = false;
+  let bbox = null;
 
+  // --- Layer 1: vehicle photo, full bleed, sepia-toned ---
+  const heroImg = heroUrl ? await loadImageEl(heroUrl, "vehicle hero photo") : null;
+  if (heroImg) {
+    // cover-fit: scale to fill the card, crop centered — matches the
+    // existing Garage hero treatment (object-fit: cover) rather than
+    // stretching/distorting a differently-proportioned photo.
+    const scale = Math.max(CARD_W / heroImg.width, CARD_H / heroImg.height);
+    const dw = heroImg.width * scale, dh = heroImg.height * scale;
+    const dx = (CARD_W - dw) / 2, dy = (CARD_H - dh) / 2;
+    ctx.filter = "sepia(35%) grayscale(20%) brightness(0.55) contrast(1.1)";
+    ctx.drawImage(heroImg, dx, dy, dw, dh);
+    ctx.filter = "none";
+    // Base scrim — present under the photo regardless of whether the map
+    // layer loads, so text/route stay legible either way.
+    const baseScrim = ctx.createRadialGradient(cx, CARD_H * 0.5, 200, cx, CARD_H * 0.5, 900);
+    baseScrim.addColorStop(0, "rgba(13,13,13,0.35)");
+    baseScrim.addColorStop(1, "rgba(13,13,13,0.82)");
+    ctx.fillStyle = baseScrim;
+    ctx.fillRect(0, 0, CARD_W, CARD_H);
+  }
+
+  // --- Layer 2: base map, faded toward the edges ---
   if (hasTrail) {
-    const mapUrl = buildStaticMapUrl(trail);
+    // Correct the bbox's aspect ratio to match the card BEFORE requesting
+    // the map or projecting any points — see the comment above
+    // correctBBoxAspect for why this is the fix for the alignment bug
+    // found in review (an uncorrected bbox lets Mapbox silently show more
+    // area on one axis than we asked for, so our hand-drawn route would
+    // drift from the real roads underneath it).
+    bbox = correctBBoxAspect(computeBBox(trail), CARD_W / CARD_H);
+    const mapUrl = buildBaseMapUrl(bbox);
     const [mapImg, sp, ep] = await Promise.all([
-      loadMapImage(mapUrl),
+      loadImageEl(mapUrl, "base map"),
       reverseGeocodePlace(trail[0].lat, trail[0].lng),
       reverseGeocodePlace(trail[trail.length - 1].lat, trail[trail.length - 1].lng),
     ]);
     startPlace = sp; endPlace = ep;
     if (mapImg) {
-      // Full-bleed map, same "photo wallpaper + caption" treatment as the
-      // Garage vehicle header: the image fills the whole card, a top-to-
-      // bottom gradient dips lighter through the middle so the route stays
-      // visible, then darkens hard toward the bottom so the stats read as
-      // a caption sitting on the photo rather than a separate panel below it.
-      ctx.drawImage(mapImg, 0, 0, 1080, 1350);
-      const grad = ctx.createLinearGradient(0, 0, 0, 1350);
-      grad.addColorStop(0, "rgba(0,0,0,0.45)");
-      grad.addColorStop(0.38, "rgba(0,0,0,0.12)");
-      grad.addColorStop(0.68, "rgba(13,13,13,0.55)");
-      grad.addColorStop(1, "rgba(13,13,13,0.97)");
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, 1080, 1350);
+      // Draw the map into an offscreen canvas so its edges can be masked
+      // to transparent before compositing onto the main card — masking
+      // directly on the main canvas would also cut into the photo/scrim
+      // already drawn there, which isn't what we want.
+      const off = document.createElement("canvas");
+      off.width = CARD_W; off.height = CARD_H;
+      const offCtx = off.getContext("2d");
+      offCtx.drawImage(mapImg, 0, 0, CARD_W, CARD_H);
+      offCtx.globalCompositeOperation = "destination-in";
+      const mask = offCtx.createRadialGradient(cx, CARD_H * 0.5, 150, cx, CARD_H * 0.5, 820);
+      mask.addColorStop(0, "rgba(0,0,0,1)");
+      mask.addColorStop(0.55, "rgba(0,0,0,0.85)");
+      mask.addColorStop(1, "rgba(0,0,0,0)");
+      offCtx.fillStyle = mask;
+      offCtx.fillRect(0, 0, CARD_W, CARD_H);
+      offCtx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = heroImg ? 0.55 : 1; // full strength only when there's no photo underneath to protect
+      ctx.drawImage(off, 0, 0);
+      ctx.globalAlpha = 1;
       mapDrawn = true;
-    } else {
-      drawRoadLines(ctx, cx, 330);
     }
-  } else {
+  }
+
+  // Fallback when there's neither a photo nor a map (nothing recorded yet
+  // for this vehicle/day) — keeps the card branded rather than blank.
+  if (!heroImg && !mapDrawn) {
     drawRoadLines(ctx, cx, 330);
   }
 
+  // --- Layer 3: the route itself, hand-drawn, always bold, never faded ---
+  // Projected with the SAME bbox the base map was requested with (see
+  // above), so it lines up with the roads underneath it.
+  if (hasTrail && bbox) {
+    const pts = downsampleForMap(trail).map(p => projectPoint(p.lng, p.lat, bbox, CARD_W, CARD_H));
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.strokeStyle = C.champagne;
+    ctx.lineWidth = 6;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.shadowColor = "rgba(0,0,0,0.6)";
+    ctx.shadowBlur = 8;
+    ctx.stroke();
+    ctx.shadowColor = "transparent"; ctx.shadowBlur = 0;
+    ctx.fillStyle = C.champagne;
+    for (const [x, y] of [pts[0], pts[pts.length - 1]]) {
+      ctx.beginPath();
+      ctx.arc(x, y, 7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   // Same soft drop-shadow the app gives text captioned on a photo
-  // (VehicleDetail's hero header) — keeps it legible over whatever the
-  // map happens to look like underneath, without needing a harder gradient
-  // that would hide the route entirely.
+  // (VehicleDetail's hero header) — keeps it legible over whatever's
+  // underneath, without needing a harder gradient that would hide the
+  // route or photo entirely.
   const shadowText = (text, x, y) => {
     ctx.shadowColor = "rgba(0,0,0,0.8)";
     ctx.shadowBlur = 10;
@@ -1661,20 +1835,21 @@ const drawTripCard = async ({ distanceKm, dateLabel, vehicleLabel, legCount, tra
   };
 
   ctx.textAlign = "center";
+  const photoOrMapDrawn = mapDrawn || !!heroImg;
 
-  // Wordmark — pinned near the top, sitting directly on the photo when
+  // Wordmark — pinned near the top, sitting directly on the photo/map when
   // there is one, the same way the app's own header sits over the map.
-  const wordmarkY = mapDrawn ? 90 : 470;
+  const wordmarkY = photoOrMapDrawn ? 90 : 470;
   ctx.fillStyle = C.champagne;
   ctx.font = "700 54px 'Cormorant Garamond'";
   shadowText("Chasin’ Curves", cx, wordmarkY);
-  ctx.fillStyle = mapDrawn ? "rgba(245,243,238,0.75)" : C.dim;
+  ctx.fillStyle = photoOrMapDrawn ? "rgba(245,243,238,0.75)" : C.dim;
   ctx.font = "600 16px 'Josefin Sans'";
   shadowText("R O A D S ,   R I V E R S   &   R I F F S", cx, wordmarkY + 30);
 
   // Stats — pinned toward the bottom, inside the heavily-darkened zone,
   // the same way a vehicle's name sits captioned on its hero photo.
-  const midY = mapDrawn ? 1010 : 680;
+  const midY = photoOrMapDrawn ? 1010 : 680;
   ctx.fillStyle = C.champagne;
   ctx.font = "700 150px 'Cormorant Garamond'";
   shadowText(`${Math.round(distanceKm)}`, cx, midY);
@@ -1779,8 +1954,26 @@ const ShareDayModal = ({ logbook, garage, onClose }) => {
     setPreview(null);
     try {
       const vehicleLabel = day.vehicleIds.length === 1 ? vehicleName(day.vehicleIds[0]) : "Multiple vehicles";
+      // Session 16d: resolve a hero photo for single-vehicle days only —
+      // with more than one vehicle in the same day there's no single
+      // "right" car to show, so those fall back to the map-only treatment,
+      // same as before. Mirrors GarageView's getVehicleHeroUrl exactly
+      // (photos[heroPhoto] -> photos[0] -> avatar) — left duplicated here
+      // deliberately rather than reaching into that component, since it's
+      // a local helper there, not a shared one; worth promoting both to a
+      // single top-level resolveVehicleHeroUrl(vehicle) if this needs a
+      // third call site later, but not for one.
+      let heroUrl = null;
+      if (day.vehicleIds.length === 1) {
+        const v = garage.find(veh => veh.id === day.vehicleIds[0]);
+        if (v) {
+          const photos = v.photos || [];
+          const hero = v.heroPhoto ? photos.find(p => p.id === v.heroPhoto) : null;
+          heroUrl = hero ? hero.url : (photos[0]?.url || v.avatar || null);
+        }
+      }
       const dateLabel = day.date.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' });
-      const blob = await drawTripCard({ distanceKm: day.distanceKm, dateLabel, vehicleLabel, legCount: day.entries.length, trail: day.trail });
+      const blob = await drawTripCard({ distanceKm: day.distanceKm, dateLabel, vehicleLabel, legCount: day.entries.length, trail: day.trail, heroUrl });
       if (!blob) throw new Error("card render unavailable");
 
       const file = new File([blob], "chasin-curves-trip.png", { type: "image/png" });
@@ -1909,7 +2102,7 @@ const InAppBrowserWarning = ({ appName, onDismiss }) => {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 12, color: C.red, fontWeight: 700 }}>You're in {appName}'s built-in browser</div>
           <div style={{ fontSize: 10, color: C.dim, marginTop: 2, lineHeight: 1.5 }}>
-            It can lose GPS trails and sign you out without warning, especially if {appName} goes to the background mid-trip. For reliable trip recording, open this page in Safari or Chrome instead.
+            It can lose GPS trails and sign you out without warning, especially if {appName} goes to the background mid-trip. If you've already added Chasin' Curves to your Home Screen, tap that icon instead — it skips this problem entirely. Otherwise, open this link in Safari or Chrome.
           </div>
         </div>
       </div>
