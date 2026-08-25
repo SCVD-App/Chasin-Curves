@@ -1928,19 +1928,25 @@ const TrailViewerModal = ({ entry, vehicleName, onClose }) => {
 };
 
 // Session 16f — was "Share a Day" (rolled every logged leg for a calendar
-// day into one card). Dropped after a real card came back a nonsense
-// blob-shaped route: two unrelated trips (LandCruiser, then the Z4) landed
-// on the same calendar day, and the day-rollup happily drew a straight
-// line from the end of one car's route to the start of the other's, on
-// top of a "Multiple vehicles" label that told nobody anything useful. A
-// day is the wrong sharing unit — the log entry (one leg, one vehicle, one
-// odometer range) is what actually corresponds to a single drive worth
-// sharing. Multi-leg trips (fuel stop, lunch stop) just show as separate
-// rows now rather than being force-merged; nothing stops sharing more
-// than one card for the same day.
+// day into one card automatically). Dropped after a real card came back a
+// nonsense blob-shaped route: two unrelated trips (LandCruiser, then the
+// Z4) landed on the same calendar day, and the day-rollup happily drew a
+// straight line from the end of one car's route to the start of the
+// other's, on top of a "Multiple vehicles" label that told nobody
+// anything useful. A day is the wrong *automatic* sharing unit.
+//
+// Session 16g — but combining trips is still genuinely useful (a lazy
+// Sunday out in the Z4, several stops, one postcard for the whole run) —
+// the problem was never combining, it was combining *without being asked*.
+// So: every completed log entry is its own shareable row (unchanged from
+// 16f) with its own one-tap Share button, PLUS a checkbox on each row —
+// tick two or more and a "Share Combined" bar appears. Combining is now
+// something the person doing the sharing decides, leg by leg, instead of
+// something the calendar decides for them.
 const ShareDayModal = ({ logbook, garage, onClose }) => {
-  const [busy, setBusy] = useState(null); // entry.id currently being built
+  const [busy, setBusy] = useState(null); // build key currently in flight — see buildKey()
   const [preview, setPreview] = useState(null); // { url } — fallback when Web Share can't take files
+  const [selected, setSelected] = useState(() => new Set()); // entry ids picked for a combined card
 
   const vehicleName = id => {
     const v = garage.find(veh => veh.id === id);
@@ -1954,29 +1960,67 @@ const ShareDayModal = ({ logbook, garage, onClose }) => {
     .slice()
     .sort((a, b) => b.timestamp - a.timestamp);
 
-  const handleShare = async (entry) => {
-    setBusy(entry.id);
+  const buildKey = (entries) => entries.map(e => e.id).sort().join("|");
+
+  const toggleSelected = (id) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  // Builds and shares a card from one or more entries, oldest to newest.
+  // One entry behaves exactly as a single-trip card always has; two or
+  // more concatenate their trails and sum their distance — the same math
+  // the old day-rollup did, just run only over legs someone actually
+  // chose, instead of everything that happened to share a calendar day.
+  // Returns whether the card was actually built (so callers can decide
+  // whether it's safe to clear the selection) — AbortError (the person
+  // just backed out of the native share sheet) still counts as built.
+  const buildAndShare = async (entries) => {
+    const key = buildKey(entries);
+    setBusy(key);
     setPreview(null);
     try {
-      const vehicleLabel = vehicleName(entry.vehicleId);
-      // Session 16d: resolve a hero photo — always a single, real vehicle
-      // now that sharing is per-entry. Mirrors GarageView's
-      // getVehicleHeroUrl exactly (photos[heroPhoto] -> photos[0] ->
-      // avatar) — left duplicated here deliberately rather than reaching
-      // into that component, since it's a local helper there, not a
-      // shared one; worth promoting both to a single top-level
-      // resolveVehicleHeroUrl(vehicle) if this needs a third call site
-      // later, but not for one.
+      const ordered = entries.slice().sort((a, b) => a.timestamp - b.timestamp);
+      const vehicleIds = Array.from(new Set(ordered.map(e => e.vehicleId)));
+      // Session 16h: a combine used to leave heroUrl null for ANY
+      // multi-vehicle selection — meaning a combined card fell all the way
+      // back to map-only, and if the map image happened to fail too (as
+      // one real card did), there was nothing left to show but a plain
+      // dark background. Combined trips still tell one story even across
+      // vehicles, so always resolve a real hero photo: the vehicle that
+      // covered the most distance across the selected legs, not "no
+      // vehicle at all." Mirrors GarageView's getVehicleHeroUrl exactly
+      // (photos[heroPhoto] -> photos[0] -> avatar) — left duplicated here
+      // deliberately rather than reaching into that component, since it's
+      // a local helper there, not a shared one; worth promoting both to a
+      // single top-level resolveVehicleHeroUrl(vehicle) if this needs a
+      // third call site later, but not for one.
+      const kmByVehicle = ordered.reduce((acc, e) => {
+        acc[e.vehicleId] = (acc[e.vehicleId] || 0) + (e.odometerEnd - e.odometerStart);
+        return acc;
+      }, {});
+      const heroVehicleId = Object.entries(kmByVehicle).sort((a, b) => b[1] - a[1])[0][0];
+      const vehicleLabel = vehicleIds.length === 1
+        ? vehicleName(heroVehicleId)
+        : `${vehicleName(heroVehicleId)} + ${vehicleIds.length - 1} other${vehicleIds.length - 1 !== 1 ? "s" : ""}`;
       let heroUrl = null;
-      const v = garage.find(veh => veh.id === entry.vehicleId);
+      const v = garage.find(veh => veh.id === heroVehicleId);
       if (v) {
         const photos = v.photos || [];
         const hero = v.heroPhoto ? photos.find(p => p.id === v.heroPhoto) : null;
         heroUrl = hero ? hero.url : (photos[0]?.url || v.avatar || null);
       }
-      const dateLabel = new Date(entry.timestamp).toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' });
-      const distanceKm = entry.odometerEnd - entry.odometerStart;
-      const blob = await drawTripCard({ distanceKm, dateLabel, vehicleLabel, legCount: 1, trail: resolveEntryTrail(entry), heroUrl });
+      const startD = new Date(ordered[0].timestamp);
+      const endD = new Date(ordered[ordered.length - 1].timestamp);
+      const dateLabel = startD.toDateString() === endD.toDateString()
+        ? startD.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' })
+        : `${startD.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })} – ${endD.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}`;
+      const distanceKm = ordered.reduce((sum, e) => sum + (e.odometerEnd - e.odometerStart), 0);
+      const trail = ordered.flatMap(resolveEntryTrail);
+      const blob = await drawTripCard({ distanceKm, dateLabel, vehicleLabel, legCount: ordered.length, trail, heroUrl });
       if (!blob) throw new Error("card render unavailable");
 
       const file = new File([blob], "chasin-curves-trip.png", { type: "image/png" });
@@ -1990,11 +2034,20 @@ const ShareDayModal = ({ logbook, garage, onClose }) => {
         // and let a manual download cover getting it into the chat.
         setPreview({ url: URL.createObjectURL(blob) });
       }
+      return true;
     } catch (e) {
-      if (e?.name !== "AbortError") alert("Couldn't build the share card — check your connection and try again.");
+      if (e?.name !== "AbortError") { alert("Couldn't build the share card — check your connection and try again."); return false; }
+      return true;
     } finally {
       setBusy(null);
     }
+  };
+
+  const handleShareSelected = async () => {
+    const entries = shareable.filter(e => selected.has(e.id));
+    if (entries.length < 2) return;
+    const ok = await buildAndShare(entries);
+    if (ok) setSelected(new Set());
   };
 
   const handleDownload = () => {
@@ -2004,8 +2057,10 @@ const ShareDayModal = ({ logbook, garage, onClose }) => {
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
   };
 
+  const selectedKey = buildKey(shareable.filter(e => selected.has(e.id)));
+
   return (
-    <Modal title="Share a Trip" subtitle="Turns one logged trip into a shareable card" onClose={onClose}>
+    <Modal title="Share a Trip" subtitle="Turns one or more logged trips into a shareable card" onClose={onClose}>
       {shareable.length === 0 && (
         <div style={{ textAlign: "center", padding: 30, color: C.dim, fontSize: 12 }}>
           No completed trips yet — add a return odometer reading to a logged trip before it can be shared.
@@ -2014,18 +2069,32 @@ const ShareDayModal = ({ logbook, garage, onClose }) => {
       {shareable.map(entry => {
         const trail = resolveEntryTrail(entry);
         const trailNote = entry.trail?.length > 0 ? `${entry.trail.length} GPS pts` : trail.length > 0 ? "start + finish pins" : "";
+        const isChecked = selected.has(entry.id);
         return (
-          <div key={entry.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: `1px solid ${C.border}`, gap: 10 }}>
-            <div style={{ minWidth: 0 }}>
+          <div key={entry.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 0", borderBottom: `1px solid ${C.border}` }}>
+            <div
+              onClick={() => toggleSelected(entry.id)}
+              title="Select to combine with other trips"
+              style={{ width: 18, height: 18, borderRadius: 4, border: `2px solid ${isChecked ? C.champagne : C.border2}`, background: isChecked ? C.champagneDim : "none", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: C.champagne, flexShrink: 0, cursor: "pointer" }}
+            >
+              {isChecked ? "✓" : ""}
+            </div>
+            <div style={{ minWidth: 0, flex: 1 }}>
               <div style={{ fontSize: 13, color: C.bone }}>{vehicleName(entry.vehicleId)}</div>
               <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>
                 {new Date(entry.timestamp).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' })} · {Math.round(entry.odometerEnd - entry.odometerStart)}km{trailNote ? ` · ${trailNote}` : ""}
               </div>
             </div>
-            <Btn size="sm" onClick={() => handleShare(entry)} disabled={busy === entry.id}>{busy === entry.id ? "Building…" : "Share"}</Btn>
+            <Btn size="sm" onClick={() => buildAndShare([entry])} disabled={!!busy}>{busy === entry.id ? "Building…" : "Share"}</Btn>
           </div>
         );
       })}
+      {selected.size >= 2 && (
+        <div style={{ marginTop: 14, padding: 12, borderRadius: 8, border: `1px solid ${C.champagne}44`, background: C.champagneDim, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+          <div style={{ fontSize: 12, color: C.bone }}>{selected.size} trips selected — combine into one card</div>
+          <Btn size="sm" onClick={handleShareSelected} disabled={!!busy}>{busy === selectedKey ? "Building…" : "Share Combined"}</Btn>
+        </div>
+      )}
       {preview && (
         <div style={{ marginTop: 16, textAlign: "center" }}>
           <img src={preview.url} style={{ maxWidth: "100%", borderRadius: 10, border: `1px solid ${C.border}` }} />
