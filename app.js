@@ -2212,7 +2212,7 @@ const TrailViewerModal = ({ entry, vehicleName, member, onClose }) => {
 // tick two or more and a "Share Combined" bar appears. Combining is now
 // something the person doing the sharing decides, leg by leg, instead of
 // something the calendar decides for them.
-const ShareDayModal = ({ logbook, garage, onClose }) => {
+const ShareDayModal = ({ logbook, garage, member, onClose }) => {
   const [busy, setBusy] = useState(null); // build key currently in flight — see buildKey()
   const [preview, setPreview] = useState(null); // { url } — fallback when Web Share can't take files
   const [selected, setSelected] = useState(() => new Set()); // entry ids picked for a combined card
@@ -2566,7 +2566,7 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPoint
       )}
 
       {sharingTrip && (
-        <ShareDayModal logbook={logbook} garage={garage} onClose={() => setSharingTrip(false)} />
+        <ShareDayModal logbook={logbook} garage={garage} member={member} onClose={() => setSharingTrip(false)} />
       )}
     </div>
   );
