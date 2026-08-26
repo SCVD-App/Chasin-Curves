@@ -1159,6 +1159,8 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
   const [tab, setTab] = useState("gallery");
   const [fullscreen, setFullscreen] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [sharingCard, setSharingCard] = useState(false);
+  const [cardPreview, setCardPreview] = useState(null); // { url } — fallback when Web Share can't take files
   const photoInputRef = useRef(null);
 
   // FIX 2: heroPhoto is a photoId string — find by id, not index
@@ -1169,6 +1171,38 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
       if (hero) return hero.url;
     }
     return photos.length > 0 ? photos[0].url : (vehicle.avatar || null);
+  };
+
+  // "Share My Ride" — builds a brag card for this one vehicle and hands it
+  // to the OS share sheet (same pattern as trip postcards), so it lands
+  // straight in whatever social app or group chat someone taps. Desktop
+  // browsers without file-sharing support fall back to a downloadable
+  // preview, same as the trip card flow.
+  const handleShareVehicle = async () => {
+    setSharingCard(true);
+    setCardPreview(null);
+    try {
+      const blob = await drawVehicleCard({ vehicle, member, heroUrl: getHeroPhoto() });
+      if (!blob) throw new Error("card render unavailable");
+      const file = new File([blob], "chasin-curves-ride.png", { type: "image/png" });
+      const shareText = `${vehicle.year || ""} ${vehicle.make} ${vehicle.model} — on Chasin' Curves 🏁`.trim();
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: "Chasin' Curves", text: shareText });
+      } else {
+        setCardPreview({ url: URL.createObjectURL(blob) });
+      }
+    } catch (e) {
+      if (e?.name !== "AbortError") alert("Couldn't build the share card — check your connection and try again.");
+    } finally {
+      setSharingCard(false);
+    }
+  };
+
+  const handleDownloadCard = () => {
+    if (!cardPreview) return;
+    const a = document.createElement("a");
+    a.href = cardPreview.url; a.download = "chasin-curves-ride.png";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
   };
 
   const updateVehicle = async (updated) => {
@@ -1250,6 +1284,9 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
         <button onClick={onBack} style={{ position: "absolute", top: 14, left: 16, background: "rgba(0,0,0,0.5)", border: "1px solid " + C.border2, borderRadius: 20, padding: "6px 14px", color: C.champagne, fontFamily: "Josefin Sans, sans-serif", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 18, lineHeight: 1 }}>‹</span> Garage
         </button>
+        <button onClick={handleShareVehicle} disabled={sharingCard} style={{ position: "absolute", top: 14, right: 16, background: "rgba(0,0,0,0.5)", border: "1px solid " + C.border2, borderRadius: 20, padding: "6px 14px", color: C.champagne, fontFamily: "Josefin Sans, sans-serif", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.08em", cursor: sharingCard ? "default" : "pointer", opacity: sharingCard ? 0.6 : 1, display: "flex", alignItems: "center", gap: 6 }}>
+          {sharingCard ? "Building…" : "📤 Share"}
+        </button>
         <div style={{ position: "absolute", bottom: 18, left: 20, right: 20 }}>
           <div style={{ fontFamily: "Cormorant Garamond, serif", fontSize: 26, fontWeight: 700, color: "#fff", lineHeight: 1.1, textShadow: "0 2px 8px rgba(0,0,0,0.8)" }}>
             {vehicle.year} {vehicle.make} {vehicle.model}
@@ -1258,6 +1295,17 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
           {vehicle.primary && <span style={{ fontSize: 10, color: C.champagne, textTransform: "uppercase", letterSpacing: "0.1em" }}>★ Primary Ride</span>}
         </div>
       </div>
+
+      {cardPreview && (
+        <div style={{ padding: "16px 20px", textAlign: "center", borderBottom: "1px solid " + C.border }}>
+          <img src={cardPreview.url} style={{ maxWidth: "100%", borderRadius: 10, border: `1px solid ${C.border}` }} />
+          <div style={{ fontSize: 11, color: C.dim, margin: "10px 0" }}>This browser can't share an image directly — download it and post it yourself.</div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn onClick={handleDownloadCard} style={{ flex: 1 }}>Download Image</Btn>
+            <Btn variant="ghost" onClick={() => setCardPreview(null)} style={{ flex: 1 }}>Close</Btn>
+          </div>
+        </div>
+      )}
 
       {/* Tabs */}
       <div style={{ display: "flex", borderBottom: "1px solid " + C.border, flexShrink: 0, background: C.midnight }}>
@@ -1980,7 +2028,113 @@ const drawTripCard = async ({ distanceKm, dateLabel, vehicleLabel, legCount, tra
   return new Promise(resolve => canvas.toBlob(blob => resolve(blob), "image/png", 0.95));
 };
 
-// Read-only trail preview — a polyline + start/end pins on the existing
+// Shrinks a font size in steps until text fits within maxWidth — vehicle
+// names vary wildly ("Jaguar X350" vs "Toyota LandCruiser 200 Series"),
+// and a title that just clips at a fixed size isn't good enough for
+// something meant to be read at a glance after being shared.
+const fitText = (ctx, text, maxWidth, startSize, minSize, fontSpec) => {
+  let size = startSize;
+  while (size > minSize) {
+    ctx.font = fontSpec(size);
+    if (ctx.measureText(text).width <= maxWidth) break;
+    size -= 4;
+  }
+  return size;
+};
+
+// Session 16n — "Share My Ride": a brag card for a single garage vehicle,
+// built from the same visual language as the trip postcard (full-bleed
+// hero photo, sepia treatment, Chasin' Curves wordmark) but showing
+// vehicle details instead of a trip's distance/route. No link or handle
+// on it yet — nothing worth printing on a shared card until Chasin'
+// Curves has its own short domain the way scvd.app already exists for
+// the portfolio; "Invite a Mate" covers the "how do I get this" question
+// in the meantime.
+const drawVehicleCard = async ({ vehicle, member, heroUrl }) => {
+  await ensureFontsLoaded();
+  const canvas = document.createElement("canvas");
+  canvas.width = CARD_W; canvas.height = CARD_H;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  const cx = CARD_W / 2;
+
+  ctx.fillStyle = C.midnight;
+  ctx.fillRect(0, 0, CARD_W, CARD_H);
+
+  const heroImg = heroUrl ? await loadImageEl(heroUrl, "vehicle hero photo") : null;
+  if (heroImg) {
+    const scale = Math.max(CARD_W / heroImg.width, CARD_H / heroImg.height);
+    const dw = heroImg.width * scale, dh = heroImg.height * scale;
+    const dx = (CARD_W - dw) / 2, dy = (CARD_H - dh) / 2;
+    ctx.filter = "sepia(35%) grayscale(20%) brightness(0.55) contrast(1.1)";
+    ctx.drawImage(heroImg, dx, dy, dw, dh);
+    ctx.filter = "none";
+    // Heavier toward the bottom than the trip card's radial scrim — this
+    // card's whole text block lives in that zone, with no map layer
+    // fighting for the same space, so it can afford to protect it harder.
+    const scrim = ctx.createLinearGradient(0, 0, 0, CARD_H);
+    scrim.addColorStop(0, "rgba(13,13,13,0.25)");
+    scrim.addColorStop(0.55, "rgba(13,13,13,0.35)");
+    scrim.addColorStop(1, "rgba(13,13,13,0.92)");
+    ctx.fillStyle = scrim;
+    ctx.fillRect(0, 0, CARD_W, CARD_H);
+  } else {
+    drawRoadLines(ctx, cx, 330);
+  }
+
+  const shadowText = (text, x, y) => {
+    ctx.shadowColor = "rgba(0,0,0,0.8)";
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 3;
+    ctx.fillText(text, x, y);
+    ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  };
+
+  ctx.textAlign = "center";
+
+  const wordmarkY = heroImg ? 90 : 470;
+  ctx.fillStyle = C.champagne;
+  ctx.font = "700 54px 'Cormorant Garamond'";
+  shadowText("Chasin’ Curves", cx, wordmarkY);
+  ctx.fillStyle = heroImg ? "rgba(245,243,238,0.75)" : C.dim;
+  ctx.font = "600 16px 'Josefin Sans'";
+  shadowText("R O A D S ,   R I V E R S   &   R I F F S", cx, wordmarkY + 30);
+
+  if (vehicle.primary) {
+    ctx.fillStyle = C.champagneLight;
+    ctx.font = "600 20px 'Josefin Sans'";
+    shadowText("★  P R I M A R Y   R I D E", cx, heroImg ? 970 : 600);
+  }
+
+  const titleY = heroImg ? 1040 : 670;
+  const titleText = `${vehicle.year || ""} ${vehicle.make} ${vehicle.model}`.trim();
+  const titleSize = fitText(ctx, titleText, CARD_W - 120, 76, 40, s => `700 ${s}px 'Cormorant Garamond'`);
+  ctx.fillStyle = C.champagne;
+  ctx.font = `700 ${titleSize}px 'Cormorant Garamond'`;
+  shadowText(titleText, cx, titleY);
+
+  const subtitleParts = [vehicle.variant, vehicle.colour].filter(Boolean);
+  if (subtitleParts.length) {
+    ctx.fillStyle = C.bone;
+    ctx.font = "400 30px 'Josefin Sans'";
+    shadowText(subtitleParts.join(" · "), cx, titleY + 48);
+  }
+
+  if (vehicle.notes) {
+    ctx.fillStyle = "rgba(245,243,238,0.75)";
+    ctx.font = "400 24px 'Josefin Sans'";
+    const capped = vehicle.notes.length > 90 ? vehicle.notes.slice(0, 87) + "…" : vehicle.notes;
+    shadowText(capped, cx, titleY + 95);
+  }
+
+  if (member?.displayName) {
+    ctx.fillStyle = "rgba(245,243,238,0.55)";
+    ctx.font = "400 22px 'Josefin Sans'";
+    shadowText(`From the garage of ${member.displayName}`, cx, 1300);
+  }
+
+  return new Promise(resolve => canvas.toBlob(blob => resolve(blob), "image/png", 0.95));
+};
 // Mapbox instance, so a recorded trip's data is actually visible rather
 // than just a point count. Deliberately not the drag-to-select Road
 // extraction UI from snail-trail-road-extraction.md — that's a separate,
@@ -2765,7 +2919,7 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
                   <div style={{ width:18, height:18, borderRadius:4, border:`2px solid ${C.champagne}`, background:C.champagneDim, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, color:C.champagne, flexShrink:0, marginTop:1 }}>✓</div>
                   <div style={{ flex:1 }}>
                     <div style={{ fontSize:13, color:C.bone }}>Active — {member.privacyRadiusKm}km around {member.privacyHomeAddress}</div>
-                    <div style={{ fontSize:11, color:C.dim, marginTop:3, lineHeight:1.5 }}>Hidden from every map and route, including your own trip postcards.</div>
+                    <div style={{ fontSize:11, color:C.dim, marginTop:3, lineHeight:1.5 }}>Hidden from every map and route, including your own trip postcards. Doesn't cover numberplates or house numbers visible in your photos.</div>
                     <div style={{ display:"flex", gap:16, marginTop:8 }}>
                       <button onClick={handleStartEditingPrivacy} style={{ background:"none", border:"none", color:C.champagne, fontSize:11, cursor:"pointer", padding:0, fontFamily:"inherit" }}>Change</button>
                       <button onClick={handleTurnOffPrivacy} style={{ background:"none", border:"none", color:C.dim, fontSize:11, cursor:"pointer", padding:0, fontFamily:"inherit" }}>Turn Off</button>
@@ -2778,6 +2932,9 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
                   <Input label="Radius (km)" type="number" value={privacyRadiusInput} onChange={setPrivacyRadiusInput} placeholder="1" />
                   <div style={{ fontSize:11, color:C.dim, marginTop:-10, marginBottom:14, lineHeight:1.5 }}>
                     Make it bigger than your property boundary — a suburban block might only need 0.3–0.5km, but a rural property of several hundred acres could need 3–5km or more to actually clear the fence line.
+                  </div>
+                  <div style={{ fontSize:11, color:C.champagneLight, marginBottom:14, lineHeight:1.5, padding:10, background:"#1a1508", borderRadius:6, border:`1px solid ${C.champagneDim}` }}>
+                    ⚠ This only obscures your location on the map — it can't do anything about a numberplate or house number visible in your own photos. Worth checking your vehicle photos and any trip postcards before sharing them.
                   </div>
                   {privacyStatus === "error" && <div style={{ fontSize:11, color:C.red, marginBottom:8 }}>Couldn't find that address, or the radius wasn't a valid number — check both and try again.</div>}
                   <div style={{ display:"flex", gap:10 }}>
