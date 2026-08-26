@@ -1667,6 +1667,48 @@ const reverseGeocodePlace = async (lat, lng) => {
   } catch { return null; }
 };
 
+// Forward geocode — turns a typed home address into the lat/lng the privacy
+// fence is centred on. Only ever called once, when the member sets up (or
+// changes) the fence in their Profile; the address itself is discarded from
+// the map/postcard rendering path afterwards, only the resulting coordinate
+// pair is ever used for the radius check below.
+const geocodeAddress = async (address) => {
+  try {
+    const res = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json?limit=1&access_token=${MAPBOX_TOKEN}`);
+    const data = await res.json();
+    const feature = data?.features?.[0];
+    if (!feature) return null;
+    const [lng, lat] = feature.center;
+    return { lat, lng, placeName: feature.place_name };
+  } catch { return null; }
+};
+
+const haversineKm = (lat1, lng1, lat2, lng2) => {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+// Session 16m — the home-location privacy fence. Trims any points within
+// the member's set radius off BOTH ends of a trail before it's ever drawn,
+// bounded, or reverse-geocoded — a real drive starts/ends at a garage, so
+// clipping the endpoints (rather than punching a gap out of the middle)
+// is what actually keeps the address off the map, not just the pin. The
+// underlying logged entry is never touched — this only affects what gets
+// rendered, everywhere it's rendered (postcards and the GPS Trail viewer
+// both call this), so the compliance record stays fully intact either way.
+const clipTrailForPrivacy = (trail, member) => {
+  if (!member?.obscureHomeLocation || member.privacyHomeLat == null || member.privacyHomeLng == null || !trail?.length) return trail || [];
+  const radius = member.privacyRadiusKm ?? 1;
+  const inZone = (p) => haversineKm(p.lat, p.lng, member.privacyHomeLat, member.privacyHomeLng) <= radius;
+  let start = 0, end = trail.length - 1;
+  while (start <= end && inZone(trail[start])) start++;
+  while (end >= start && inZone(trail[end])) end--;
+  return trail.slice(start, end + 1);
+};
+
 // Generic cross-origin image loader for canvas use — crossOrigin is
 // required so a successfully-drawn image doesn't taint the canvas and
 // break canvas.toBlob() later. `label` is purely diagnostic: a failed
@@ -1778,7 +1820,8 @@ const resolveEntryTrail = (e) => {
 //   → hand-drawn route, bold, on top   — optional, needs a trail
 //   → text captions                    — unchanged positions/content
 // heroUrl is new; everything else keeps the same call shape as before.
-const drawTripCard = async ({ distanceKm, dateLabel, vehicleLabel, legCount, trail, heroUrl }) => {
+const drawTripCard = async ({ distanceKm, dateLabel, vehicleLabel, legCount, trail, heroUrl, member }) => {
+  trail = clipTrailForPrivacy(trail, member);
   await ensureFontsLoaded();
   const canvas = document.createElement("canvas");
   canvas.width = CARD_W; canvas.height = CARD_H;
@@ -1942,11 +1985,11 @@ const drawTripCard = async ({ distanceKm, dateLabel, vehicleLabel, legCount, tra
 // than just a point count. Deliberately not the drag-to-select Road
 // extraction UI from snail-trail-road-extraction.md — that's a separate,
 // later build; this is only phase 2, capture + confirm-it-worked.
-const TrailViewerModal = ({ entry, vehicleName, onClose }) => {
+const TrailViewerModal = ({ entry, vehicleName, member, onClose }) => {
   const mapContainer = useRef(null);
   const mapRef = useRef(null);
   const [mapFailed, setMapFailed] = useState(false);
-  const points = entry.trail || [];
+  const points = clipTrailForPrivacy(entry.trail || [], member);
 
   useEffect(() => {
     if (!window.mapboxgl || MAPBOX_TOKEN.includes("PASTE_YOUR") || points.length === 0) {
@@ -1986,7 +2029,9 @@ const TrailViewerModal = ({ entry, vehicleName, onClose }) => {
         <div ref={mapContainer} style={{ position: "absolute", inset: 0 }} />
         {mapFailed && (
           <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: C.dim, fontSize: 12, textAlign: "center", padding: 20 }}>
-            {points.length === 0 ? "No points recorded for this trip." : "Map unavailable."}
+            {points.length === 0
+              ? ((entry.trail || []).length > 0 ? "Entire trip was inside your home privacy radius — nothing to show." : "No points recorded for this trip.")
+              : "Map unavailable."}
           </div>
         )}
       </div>
@@ -2090,7 +2135,7 @@ const ShareDayModal = ({ logbook, garage, onClose }) => {
         : `${startD.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })} – ${endD.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}`;
       const distanceKm = ordered.reduce((sum, e) => sum + (e.odometerEnd - e.odometerStart), 0);
       const trail = ordered.flatMap(resolveEntryTrail);
-      const blob = await drawTripCard({ distanceKm, dateLabel, vehicleLabel, legCount: ordered.length, trail, heroUrl });
+      const blob = await drawTripCard({ distanceKm, dateLabel, vehicleLabel, legCount: ordered.length, trail, heroUrl, member });
       if (!blob) throw new Error("card render unavailable");
 
       const file = new File([blob], "chasin-curves-trip.png", { type: "image/png" });
@@ -2363,7 +2408,7 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPoint
       )}
 
       {viewingTrail && (
-        <TrailViewerModal entry={viewingTrail} vehicleName={vehicleName(viewingTrail.vehicleId)} onClose={() => setViewingTrail(null)} />
+        <TrailViewerModal entry={viewingTrail} vehicleName={vehicleName(viewingTrail.vehicleId)} member={member} onClose={() => setViewingTrail(null)} />
       )}
 
       {sharingTrip && (
@@ -2558,6 +2603,10 @@ const FAST_MONEY = [
 const ProfileView = ({ member, onUpdate, pointsLog }) => {
   const [tab, setTab] = useState("profile");
   const [editing, setEditing] = useState(false);
+  const [privacyAddress, setPrivacyAddress] = useState(member.privacyHomeAddress || "");
+  const [privacyRadiusInput, setPrivacyRadiusInput] = useState(String(member.privacyRadiusKm ?? 1));
+  const [editingPrivacy, setEditingPrivacy] = useState(false);
+  const [privacyStatus, setPrivacyStatus] = useState("idle"); // idle | saving | error
   const [form, setForm] = useState({
     displayName: member.displayName, location: member.location, bio: member.bio,
     occupation: member.occupation||"", yearsEnthusiast: member.yearsEnthusiast||"",
@@ -2605,6 +2654,44 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
   };
   const setFastMoney = (qid, answer) => {
     onUpdate({ ...member, fastMoney: { ...(member.fastMoney||{}), [qid]: answer } });
+  };
+
+  // Turning the fence off clears it entirely — no address, no coordinates,
+  // no radius, nothing left obscured. Changing an already-active fence
+  // (different radius, moved house) goes through the same address+radius
+  // form via editingPrivacy, rather than forcing an off/on round trip.
+  const handleTurnOffPrivacy = () => {
+    onUpdate({ ...member, obscureHomeLocation: false, privacyHomeAddress: null, privacyHomeLat: null, privacyHomeLng: null, privacyRadiusKm: null });
+    setPrivacyAddress("");
+    setPrivacyRadiusInput("1");
+    setPrivacyStatus("idle");
+    setEditingPrivacy(false);
+  };
+
+  const handleStartEditingPrivacy = () => {
+    setPrivacyAddress(member.privacyHomeAddress || "");
+    setPrivacyRadiusInput(String(member.privacyRadiusKm ?? 1));
+    setPrivacyStatus("idle");
+    setEditingPrivacy(true);
+  };
+
+  const handleSavePrivacyFence = async () => {
+    if (!privacyAddress.trim()) return;
+    const radius = parseFloat(privacyRadiusInput);
+    if (!Number.isFinite(radius) || radius <= 0) { setPrivacyStatus("error"); return; }
+    setPrivacyStatus("saving");
+    const geocoded = await geocodeAddress(privacyAddress.trim());
+    if (!geocoded) { setPrivacyStatus("error"); return; }
+    onUpdate({
+      ...member,
+      obscureHomeLocation: true,
+      privacyHomeAddress: privacyAddress.trim(),
+      privacyHomeLat: geocoded.lat,
+      privacyHomeLng: geocoded.lng,
+      privacyRadiusKm: radius,
+    });
+    setPrivacyStatus("idle");
+    setEditingPrivacy(false);
   };
 
   return (
@@ -2669,7 +2756,44 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
               )}
             </div>
             <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
+              <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne, marginBottom:8 }}>Privacy</div>
+              <div style={{ fontSize:12, color:C.dim, marginBottom:12, lineHeight:1.6 }}>
+                If you drive something worth a second look — a GT-HO, an E-Type, anything a thief would remember — you might not want your garage's location showing up on a shared trip. This obscures your home from every map and route Chasin' Curves shows, including your own trip postcards. You set the radius yourself — a suburban block needs a lot less than a rural property.
+              </div>
+              {member.obscureHomeLocation && !editingPrivacy ? (
+                <div style={{ display:"flex", gap:10, alignItems:"flex-start", padding:12, borderRadius:8, border:`1px solid ${C.champagne}`, background:C.champagneDim }}>
+                  <div style={{ width:18, height:18, borderRadius:4, border:`2px solid ${C.champagne}`, background:C.champagneDim, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, color:C.champagne, flexShrink:0, marginTop:1 }}>✓</div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:13, color:C.bone }}>Active — {member.privacyRadiusKm}km around {member.privacyHomeAddress}</div>
+                    <div style={{ fontSize:11, color:C.dim, marginTop:3, lineHeight:1.5 }}>Hidden from every map and route, including your own trip postcards.</div>
+                    <div style={{ display:"flex", gap:16, marginTop:8 }}>
+                      <button onClick={handleStartEditingPrivacy} style={{ background:"none", border:"none", color:C.champagne, fontSize:11, cursor:"pointer", padding:0, fontFamily:"inherit" }}>Change</button>
+                      <button onClick={handleTurnOffPrivacy} style={{ background:"none", border:"none", color:C.dim, fontSize:11, cursor:"pointer", padding:0, fontFamily:"inherit" }}>Turn Off</button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ marginTop:4 }}>
+                  <Input label="Home Address" value={privacyAddress} onChange={setPrivacyAddress} placeholder="e.g. 12 Example St, Mount Mellum QLD" />
+                  <Input label="Radius (km)" type="number" value={privacyRadiusInput} onChange={setPrivacyRadiusInput} placeholder="1" />
+                  <div style={{ fontSize:11, color:C.dim, marginTop:-10, marginBottom:14, lineHeight:1.5 }}>
+                    Make it bigger than your property boundary — a suburban block might only need 0.3–0.5km, but a rural property of several hundred acres could need 3–5km or more to actually clear the fence line.
+                  </div>
+                  {privacyStatus === "error" && <div style={{ fontSize:11, color:C.red, marginBottom:8 }}>Couldn't find that address, or the radius wasn't a valid number — check both and try again.</div>}
+                  <div style={{ display:"flex", gap:10 }}>
+                    {editingPrivacy && (
+                      <Btn variant="ghost" onClick={() => { setEditingPrivacy(false); setPrivacyStatus("idle"); }} style={{ flex:1 }}>Cancel</Btn>
+                    )}
+                    <Btn onClick={handleSavePrivacyFence} disabled={privacyStatus === "saving" || !privacyAddress.trim()} style={{ flex:1 }}>
+                      {privacyStatus === "saving" ? "Setting up…" : (editingPrivacy ? "Save Changes" : "Set Up Privacy Fence")}
+                    </Btn>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
               <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne, marginBottom:12 }}>Community Stats</div>
+
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
                 {[["🛣",member.roadsAdded?.length||0,"Roads"],["✍️",member.reviewsWritten||0,"Reviews"],["🏁",member.tripsPlanned||0,"Trips"],["🚗",member.garage?.length||0,"Vehicles"],["⭐",member.points||0,"Points"],["🏆",getTier(member.points).name,"Tier"]].map(([icon,val,label])=>(
                   <div key={label} style={{ background:"#111", borderRadius:8, padding:"10px 8px", textAlign:"center", border:`1px solid ${C.border}` }}>
