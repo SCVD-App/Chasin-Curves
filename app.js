@@ -1993,13 +1993,21 @@ const drawTripCard = async ({ distanceKm, dateLabel, vehicleLabel, legCount, tra
 
   // Wordmark — pinned near the top, sitting directly on the photo/map when
   // there is one, the same way the app's own header sits over the map.
-  const wordmarkY = photoOrMapDrawn ? 90 : 470;
+  // Session 16o — wordmark sized to match the distance number's visual
+  // weight (150px) rather than a small fixed size, per Scott's symmetry
+  // note. fitText keeps it from overflowing the card width the way a
+  // flat 150px would for a 14-character phrase; the tagline and vertical
+  // spacing scale with whatever size it lands on, so the block still
+  // reads as one balanced unit at any width the text ends up fitting.
+  const wordmarkText = "Chasin’ Curves";
+  const wordmarkSize = fitText(ctx, wordmarkText, CARD_W - 120, 150, 60, s => `700 ${s}px 'Cormorant Garamond'`);
+  const wordmarkY = photoOrMapDrawn ? 70 + wordmarkSize * 0.6 : 450 + wordmarkSize * 0.6;
   ctx.fillStyle = C.champagne;
-  ctx.font = "700 54px 'Cormorant Garamond'";
-  shadowText("Chasin’ Curves", cx, wordmarkY);
+  ctx.font = `700 ${wordmarkSize}px 'Cormorant Garamond'`;
+  shadowText(wordmarkText, cx, wordmarkY);
   ctx.fillStyle = photoOrMapDrawn ? "rgba(245,243,238,0.75)" : C.dim;
   ctx.font = "600 16px 'Josefin Sans'";
-  shadowText("R O A D S ,   R I V E R S   &   R I F F S", cx, wordmarkY + 30);
+  shadowText("R O A D S ,   R I V E R S   &   R I F F S", cx, wordmarkY + wordmarkSize * 0.22 + 12);
 
   // Stats — pinned toward the bottom, inside the heavily-darkened zone,
   // the same way a vehicle's name sits captioned on its hero photo.
@@ -2289,6 +2297,19 @@ const ShareDayModal = ({ logbook, garage, member, onClose }) => {
         : `${startD.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })} – ${endD.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}`;
       const distanceKm = ordered.reduce((sum, e) => sum + (e.odometerEnd - e.odometerStart), 0);
       const trail = ordered.flatMap(resolveEntryTrail);
+      // Session 16p — the map/route weren't appearing for an entry known
+      // to have 76 recorded GPS points, with no fetch/decode error firing
+      // (those are already covered by loadImageEl's own alerts). That only
+      // leaves one gap: the recorded points existing on the entry but not
+      // surviving into the trail actually handed to the card. This makes
+      // that gap visible on-device instead of silently rendering a
+      // plainer card, since there's no other way to see it from here.
+      if (trail.length < 2) {
+        const rawCounts = ordered.map(e => `${e.id}: ${e.trail?.length || 0} pts`).join(", ");
+        if (ordered.some(e => (e.trail?.length || 0) > 0)) {
+          alert(`Trip Postcard: this entry has recorded GPS points, but they weren't used for the map.\n${rawCounts}`);
+        }
+      }
       const blob = await drawTripCard({ distanceKm, dateLabel, vehicleLabel, legCount: ordered.length, trail, heroUrl, member });
       if (!blob) throw new Error("card render unavailable");
 
