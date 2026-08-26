@@ -1869,7 +1869,12 @@ const resolveEntryTrail = (e) => {
 //   → text captions                    — unchanged positions/content
 // heroUrl is new; everything else keeps the same call shape as before.
 const drawTripCard = async ({ distanceKm, dateLabel, vehicleLabel, legCount, trail, heroUrl, member }) => {
+  const preClipLength = trail?.length || 0;
   trail = clipTrailForPrivacy(trail, member);
+  if (preClipLength > 0 && trail.length !== preClipLength) {
+    console.warn(`[Chasin' Curves] privacy clip changed trail from ${preClipLength} to ${trail.length} points.`);
+    alert(`Trip Postcard debug — privacy clip changed trail from ${preClipLength} to ${trail.length} points.`);
+  }
   await ensureFontsLoaded();
   const canvas = document.createElement("canvas");
   canvas.width = CARD_W; canvas.height = CARD_H;
@@ -2297,18 +2302,17 @@ const ShareDayModal = ({ logbook, garage, member, onClose }) => {
         : `${startD.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })} – ${endD.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}`;
       const distanceKm = ordered.reduce((sum, e) => sum + (e.odometerEnd - e.odometerStart), 0);
       const trail = ordered.flatMap(resolveEntryTrail);
-      // Session 16p — the map/route weren't appearing for an entry known
-      // to have 76 recorded GPS points, with no fetch/decode error firing
-      // (those are already covered by loadImageEl's own alerts). That only
-      // leaves one gap: the recorded points existing on the entry but not
-      // surviving into the trail actually handed to the card. This makes
-      // that gap visible on-device instead of silently rendering a
-      // plainer card, since there's no other way to see it from here.
-      if (trail.length < 2) {
-        const rawCounts = ordered.map(e => `${e.id}: ${e.trail?.length || 0} pts`).join(", ");
-        if (ordered.some(e => (e.trail?.length || 0) > 0)) {
-          alert(`Trip Postcard: this entry has recorded GPS points, but they weren't used for the map.\n${rawCounts}`);
-        }
+      // Session 16q — 16p's diagnostic only covered one failure shape (raw
+      // points present but not surviving into trail) and would stay silent
+      // for the other shape (no raw points at all reaching this point,
+      // which looks identical from outside — no alert either way). Rather
+      // than guess a third time, this reports the real numbers every time
+      // a trail-bearing share happens, so whichever shape it actually is
+      // becomes visible instead of assumed.
+      if (ordered.some(e => (e.trail?.length || 0) > 0) || trail.length > 0) {
+        const rawCounts = ordered.map(e => `${e.id}: ${e.trail?.length || 0} raw pts`).join(", ");
+        console.warn(`[Chasin' Curves] share trail check — ${rawCounts} | combined: ${trail.length} pts | member.obscureHomeLocation: ${!!member?.obscureHomeLocation}`);
+        alert(`Trip Postcard debug — ${rawCounts}\nCombined trail: ${trail.length} pts\nPrivacy fence on: ${!!member?.obscureHomeLocation}`);
       }
       const blob = await drawTripCard({ distanceKm, dateLabel, vehicleLabel, legCount: ordered.length, trail, heroUrl, member });
       if (!blob) throw new Error("card render unavailable");
