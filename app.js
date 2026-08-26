@@ -1664,47 +1664,36 @@ const reverseGeocodePlace = async (lat, lng) => {
 // which layer didn't load and why (almost always a CORS failure on the
 // image host, not a bug in this code) — check devtools console after a
 // share if a layer seems to be missing.
-// Session 16j — Scott can't get to devtools on his phone, so a failed
-// labelled image load (currently just the vehicle hero photo) now also
-// runs a quick two-probe diagnostic and surfaces it as a plain alert()
-// right on-device, in addition to the existing console.warn. A no-cors
-// fetch tells us if the resource is reachable at all (network/DNS); a
-// cors fetch on the same URL tells us whether the host is actually
-// sending Access-Control-Allow-Origin. Fire-and-forget — never blocks
-// or delays the graceful null-resolve below, which still happens
-// immediately so the card renders without the photo layer either way.
-const diagnoseImageLoadFailure = async (url) => {
-  let reachable = false;
+// Session 16k — three separate photos, three separate vehicles, all
+// failed to load on Scott's phone via the crossOrigin Image() approach
+// below, while the diagnostic's own fetch() calls kept confirming each
+// URL was genuinely reachable and CORS-clean. That split points at a
+// mechanism-specific gap between new Image()+crossOrigin and fetch() on
+// his device, not a bad photo or a bucket problem — so this now loads
+// the photo the same way the diagnostic already proved works: fetch it,
+// turn the response into a blob, and point a plain <img> at that local
+// blob: URL. A blob URL is same-origin by definition, so there's no
+// crossOrigin attribute needed and no way for it to taint the canvas.
+const loadImageEl = async (url, label) => {
   try {
-    await fetch(url, { mode: "no-cors", cache: "no-store" });
-    reachable = true;
-  } catch { /* genuinely unreachable: DNS, network, or the URL itself is bad */ }
-
-  if (!reachable) return `unreachable (network/DNS issue, or the URL itself is bad)\n${url}`;
-
-  try {
-    await fetch(url, { mode: "cors", cache: "no-store" });
-    return `reachable AND passed a CORS check just now — looks like a transient or caching issue, not a CORS policy problem\n${url}`;
-  } catch {
-    return `reachable, but blocked by CORS — the host isn't sending Access-Control-Allow-Origin\n${url}`;
+    const res = await fetch(url, { mode: "cors", cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    return await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => { URL.revokeObjectURL(objectUrl); resolve(null); };
+      img.src = objectUrl;
+    });
+  } catch (e) {
+    if (label) {
+      console.warn(`[Chasin' Curves] ${label} failed to load for the trip card — ${e.message}. Falling back gracefully.`, url);
+      alert(`Trip Postcard: ${label} didn't load.\n${e.message}\n${url}`);
+    }
+    return null;
   }
 };
-
-const loadImageEl = (url, label) => new Promise((resolve) => {
-  const img = new Image();
-  img.crossOrigin = "anonymous";
-  img.onload = () => resolve(img);
-  img.onerror = () => {
-    if (label) {
-      console.warn(`[Chasin' Curves] ${label} failed to load for the trip card — check that its host sends CORS headers (Access-Control-Allow-Origin) for cross-origin image loads. Falling back gracefully.`, url);
-      diagnoseImageLoadFailure(url).then(reason => {
-        alert(`Trip Postcard: ${label} didn't load.\n${reason}`);
-      });
-    }
-    resolve(null);
-  };
-  img.src = url;
-});
 
 // Canvas text only draws in a web font once the browser has actually
 // rasterized that exact weight/size — load everything this card uses,
