@@ -1408,6 +1408,11 @@ const LogTripModal = ({ member, logbook, onClose, onSubmit }) => {
         </select>
       </div>
       <Input label="Odometer" type="number" value={odometer} onChange={setOdometer} placeholder="e.g. 84210" />
+      {lastReading != null && (
+        <div style={{ fontSize: 11, color: C.champagne, marginTop: -10, marginBottom: 14, lineHeight: 1.5 }}>
+          Pre-filled from the last logged reading ({lastReading}km). Update it if you've driven this vehicle since then without logging it here — once submitted, a trip's start reading can't be edited.
+        </div>
+      )}
       {vehicle && !vehicle.regoState && (
         <div style={{ fontSize: 11, color: C.dim, marginBottom: 14, lineHeight: 1.5 }}>
           No registration state set for this vehicle — the entry will still be logged, but day-cap tracking won't show until you set one in the Garage.
@@ -1659,12 +1664,43 @@ const reverseGeocodePlace = async (lat, lng) => {
 // which layer didn't load and why (almost always a CORS failure on the
 // image host, not a bug in this code) — check devtools console after a
 // share if a layer seems to be missing.
+// Session 16j — Scott can't get to devtools on his phone, so a failed
+// labelled image load (currently just the vehicle hero photo) now also
+// runs a quick two-probe diagnostic and surfaces it as a plain alert()
+// right on-device, in addition to the existing console.warn. A no-cors
+// fetch tells us if the resource is reachable at all (network/DNS); a
+// cors fetch on the same URL tells us whether the host is actually
+// sending Access-Control-Allow-Origin. Fire-and-forget — never blocks
+// or delays the graceful null-resolve below, which still happens
+// immediately so the card renders without the photo layer either way.
+const diagnoseImageLoadFailure = async (url) => {
+  let reachable = false;
+  try {
+    await fetch(url, { mode: "no-cors", cache: "no-store" });
+    reachable = true;
+  } catch { /* genuinely unreachable: DNS, network, or the URL itself is bad */ }
+
+  if (!reachable) return `unreachable (network/DNS issue, or the URL itself is bad)\n${url}`;
+
+  try {
+    await fetch(url, { mode: "cors", cache: "no-store" });
+    return `reachable AND passed a CORS check just now — looks like a transient or caching issue, not a CORS policy problem\n${url}`;
+  } catch {
+    return `reachable, but blocked by CORS — the host isn't sending Access-Control-Allow-Origin\n${url}`;
+  }
+};
+
 const loadImageEl = (url, label) => new Promise((resolve) => {
   const img = new Image();
   img.crossOrigin = "anonymous";
   img.onload = () => resolve(img);
   img.onerror = () => {
-    if (label) console.warn(`[Chasin' Curves] ${label} failed to load for the trip card — check that its host sends CORS headers (Access-Control-Allow-Origin) for cross-origin image loads. Falling back gracefully.`, url);
+    if (label) {
+      console.warn(`[Chasin' Curves] ${label} failed to load for the trip card — check that its host sends CORS headers (Access-Control-Allow-Origin) for cross-origin image loads. Falling back gracefully.`, url);
+      diagnoseImageLoadFailure(url).then(reason => {
+        alert(`Trip Postcard: ${label} didn't load.\n${reason}`);
+      });
+    }
     resolve(null);
   };
   img.src = url;
