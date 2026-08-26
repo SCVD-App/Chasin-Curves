@@ -1636,9 +1636,21 @@ const projectPoint = (lng, lat, bbox, width, height) => {
 // Plain styled map + labels only, at an explicit bbox — no path overlay,
 // since the route is drawn by hand now (see drawTripCard) so it can stay
 // bold and fully opaque even where the map underneath fades toward the edges.
+// Session 16l — Mapbox's Static Images API caps requested width/height at
+// 1280px each. CARD_H (1350) is over that, so every map request for this
+// card size was likely being rejected regardless of trip/vehicle — the
+// same failure for every share, not something specific to one trip.
+// Scaling both dimensions down proportionally (aspect already matches
+// CARD_W/CARD_H via correctBBoxAspect) keeps the request valid; drawImage
+// already stretches whatever comes back to fill CARD_W x CARD_H, so the
+// visual result is unchanged bar a small, unnoticeable resolution drop.
+const MAPBOX_MAX_DIMENSION = 1280;
 const buildBaseMapUrl = (bbox, width = CARD_W, height = CARD_H) => {
+  const scale = Math.min(1, MAPBOX_MAX_DIMENSION / width, MAPBOX_MAX_DIMENSION / height);
+  const reqW = Math.round(width * scale);
+  const reqH = Math.round(height * scale);
   const bboxStr = `[${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}]`;
-  return `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/${bboxStr}/${width}x${height}@2x?access_token=${MAPBOX_TOKEN}`;
+  return `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/${bboxStr}/${reqW}x${reqH}@2x?access_token=${MAPBOX_TOKEN}`;
 };
 
 // Best-effort reverse geocode for a friendly "Robe, SA → Naracoorte, SA"
@@ -1683,7 +1695,14 @@ const loadImageEl = async (url, label) => {
     return await new Promise((resolve) => {
       const img = new Image();
       img.onload = () => resolve(img);
-      img.onerror = () => { URL.revokeObjectURL(objectUrl); resolve(null); };
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        if (label) {
+          console.warn(`[Chasin' Curves] ${label} fetched fine but couldn't be decoded as an image for the trip card.`, url);
+          alert(`Trip Postcard: ${label} fetched OK but wasn't a valid image.\n${url}`);
+        }
+        resolve(null);
+      };
       img.src = objectUrl;
     });
   } catch (e) {
