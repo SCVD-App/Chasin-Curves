@@ -2105,13 +2105,25 @@ const drawVehicleCard = async ({ vehicle, member, heroUrl }) => {
 
   ctx.textAlign = "center";
 
-  const wordmarkY = heroImg ? 90 : 470;
+  const titleText = `${vehicle.year || ""} ${vehicle.make} ${vehicle.model}`.trim();
+  const titleSize = fitText(ctx, titleText, CARD_W - 120, 76, 40, s => `700 ${s}px 'Cormorant Garamond'`);
+
+  // Session 16t — wordmark sized to match the vehicle title's weight
+  // (was a small fixed 54px against a title that could run up to 76px),
+  // per Scott's note that the header/footer imbalance was really just
+  // this size mismatch once the margins themselves checked out fine.
+  // Starts at titleSize and only shrinks further if "Chasin' Curves"
+  // itself doesn't fit that wide — same bounded-fit approach as the
+  // trip postcard's wordmark.
+  const wordmarkText = "Chasin’ Curves";
+  const wordmarkSize = fitText(ctx, wordmarkText, CARD_W - 120, titleSize, 40, s => `700 ${s}px 'Cormorant Garamond'`);
+  const wordmarkY = heroImg ? 70 + wordmarkSize * 0.6 : 450 + wordmarkSize * 0.6;
   ctx.fillStyle = C.champagne;
-  ctx.font = "700 54px 'Cormorant Garamond'";
-  shadowText("Chasin’ Curves", cx, wordmarkY);
+  ctx.font = `700 ${wordmarkSize}px 'Cormorant Garamond'`;
+  shadowText(wordmarkText, cx, wordmarkY);
   ctx.fillStyle = heroImg ? "rgba(245,243,238,0.75)" : C.dim;
   ctx.font = "600 16px 'Josefin Sans'";
-  shadowText("R O A D S ,   R I V E R S   &   R I F F S", cx, wordmarkY + 30);
+  shadowText("R O A D S ,   R I V E R S   &   R I F F S", cx, wordmarkY + wordmarkSize * 0.22 + 12);
 
   if (vehicle.primary) {
     ctx.fillStyle = C.champagneLight;
@@ -2120,8 +2132,6 @@ const drawVehicleCard = async ({ vehicle, member, heroUrl }) => {
   }
 
   const titleY = heroImg ? 1040 : 670;
-  const titleText = `${vehicle.year || ""} ${vehicle.make} ${vehicle.model}`.trim();
-  const titleSize = fitText(ctx, titleText, CARD_W - 120, 76, 40, s => `700 ${s}px 'Cormorant Garamond'`);
   ctx.fillStyle = C.champagne;
   ctx.font = `700 ${titleSize}px 'Cormorant Garamond'`;
   shadowText(titleText, cx, titleY);
