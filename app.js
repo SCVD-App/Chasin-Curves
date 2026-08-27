@@ -3610,12 +3610,40 @@ const App = () => {
     if (!currentUser || !activeTrip) return;
     if (gpsIntervalRef.current) { clearInterval(gpsIntervalRef.current); gpsIntervalRef.current = null; }
     releaseWakeLock();
+
+    // Session 16r — ask for the return odometer right here, at hand-back,
+    // instead of leaving it to a separate "+ Return Odo" step someone has
+    // to remember to come back for later. Only on the actual first stop
+    // (never on a subsequent "Retry Save" of an already-stopped trip,
+    // which calls this same function again) — and cancelling doesn't
+    // block anything, the trail still saves and "+ Return Odo" is still
+    // there afterward exactly as before this change.
+    const entry = logbook.find(e => e.id === activeTrip.entryId);
+    let odometerEnd = null, endCoord = null;
+    if (!activeTrip.stopped && entry && entry.odometerEnd == null) {
+      const val = prompt("Trip complete! What's the odometer reading now?");
+      if (val !== null) {
+        const n = Number(val);
+        if (val.trim() === "" || Number.isNaN(n) || n < entry.odometerStart) {
+          alert("Enter a number no lower than the start reading — you can add it later from the Logbook instead.");
+        } else {
+          odometerEnd = n;
+          const point = await pollGpsPoint("trip finish pin");
+          endCoord = point ? { lat: point.lat, lng: point.lng } : null;
+        }
+      }
+    }
+
     const stopped = { ...activeTrip, stopped: true };
     setActiveTrip(stopped);
     setStoredActiveTrip(stopped);
     try {
       await api.saveTrail(currentUser.id, activeTrip.entryId, activeTrip.points);
       setLogbook(prev => prev.map(e => e.id === activeTrip.entryId ? { ...e, trail: activeTrip.points } : e));
+      if (odometerEnd != null) {
+        await api.addReturnOdometer(currentUser.id, activeTrip.entryId, odometerEnd, endCoord);
+        setLogbook(prev => prev.map(e => e.id === activeTrip.entryId ? { ...e, odometerEnd, ...(endCoord ? { endCoord } : {}) } : e));
+      }
       setStoredActiveTrip(null);
       setActiveTrip(null);
       if (tripSavedTimerRef.current) clearTimeout(tripSavedTimerRef.current);
@@ -3627,7 +3655,7 @@ const App = () => {
       // "Retry Save" button calls this same function again, and nothing is
       // lost in the meantime since the points are already on disk.
     }
-  }, [currentUser, activeTrip, handleSignOut, releaseWakeLock]);
+  }, [currentUser, activeTrip, handleSignOut, releaseWakeLock, logbook]);
 
   const discardTrail = useCallback(() => {
     releaseWakeLock();
