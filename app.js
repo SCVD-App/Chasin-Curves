@@ -2407,7 +2407,139 @@ const ShareDayModal = ({ logbook, garage, member, onClose }) => {
 // a trail is recording — GPS polling lives in App so it survives the user
 // switching screens; if this only lived inside LogbookView it would stop
 // the moment they tapped away to Roads or Garage.
-const ActiveTripBanner = ({ activeTrip, vehicleName, onStop, onDiscard }) => {
+// Session 16s — "Live Log": a dedicated, on-the-spot screen for a trip
+// still in progress (or just stopped), built specifically to be shown to
+// a roadside check. The Logbook list itself is deliberately just a list —
+// nothing in it is clickable into a detail view — so without this there
+// was no way for anyone to actually demonstrate a log entry's start time,
+// location, or odometer beyond a single summary row. Distinct from the
+// Trip Postcard: this is a live compliance view for right now, not a
+// finished, shareable brag card for later. Respects the same home-privacy
+// fence as everything else — the start location shows as plain "Home"
+// rather than the real place name when it falls inside the fence, since
+// an officer checking a log doesn't need the address, just confirmation
+// the trip is real.
+const LiveTripView = ({ activeTrip, entry, vehicle, member, onClose }) => {
+  const mapContainer = useRef(null);
+  const mapRef = useRef(null);
+  const markerRef = useRef(null);
+  const [mapFailed, setMapFailed] = useState(false);
+  const [startPlace, setStartPlace] = useState(null);
+  const [sharing, setSharing] = useState(false);
+  const points = activeTrip?.points || [];
+
+  const startIsHome = !!(member?.obscureHomeLocation && entry?.startCoord && member.privacyHomeLat != null &&
+    haversineKm(entry.startCoord.lat, entry.startCoord.lng, member.privacyHomeLat, member.privacyHomeLng) <= (member.privacyRadiusKm ?? 1));
+
+  useEffect(() => {
+    if (startIsHome || !entry?.startCoord) return;
+    let cancelled = false;
+    reverseGeocodePlace(entry.startCoord.lat, entry.startCoord.lng).then(p => { if (!cancelled) setStartPlace(p); });
+    return () => { cancelled = true; };
+  }, [entry?.startCoord?.lat, entry?.startCoord?.lng, startIsHome]);
+
+  useEffect(() => {
+    if (!window.mapboxgl || MAPBOX_TOKEN.includes("PASTE_YOUR") || points.length === 0) {
+      setMapFailed(true);
+      return;
+    }
+    window.mapboxgl.accessToken = MAPBOX_TOKEN;
+    const coords = points.map(p => [p.lng, p.lat]);
+    const map = new window.mapboxgl.Map({
+      container: mapContainer.current,
+      style: "mapbox://styles/mapbox/dark-v11",
+      center: coords[coords.length - 1],
+      zoom: 13,
+      attributionControl: false,
+    });
+    map.on("load", () => {
+      map.addSource("trail", { type: "geojson", data: { type: "Feature", geometry: { type: "LineString", coordinates: coords } } });
+      map.addLayer({ id: "trail-line", type: "line", source: "trail", paint: { "line-color": C.champagne, "line-width": 3 } });
+      markerRef.current = new window.mapboxgl.Marker({ color: C.red }).setLngLat(coords[coords.length - 1]).addTo(map);
+      mapRef.current = map;
+    });
+    map.on("error", () => setMapFailed(true));
+    return () => { map.remove(); mapRef.current = null; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || points.length === 0) return;
+    const coords = points.map(p => [p.lng, p.lat]);
+    const src = map.getSource?.("trail");
+    if (src) src.setData({ type: "Feature", geometry: { type: "LineString", coordinates: coords } });
+    if (markerRef.current) markerRef.current.setLngLat(coords[coords.length - 1]);
+    map.panTo(coords[coords.length - 1]);
+  }, [points.length]);
+
+  const handleShare = async () => {
+    setSharing(true);
+    try {
+      const lines = [
+        "Chasin' Curves — Live Trip Log",
+        `${[vehicle?.year, vehicle?.make, vehicle?.model].filter(Boolean).join(" ")}${vehicle?.regoState ? ` · Registered ${vehicle.regoState}` : ""}`,
+        `Started: ${new Date(entry.timestamp).toLocaleString("en-AU")}`,
+        `Start odometer: ${entry.odometerStart}`,
+        `Started from: ${startIsHome ? "Home" : (startPlace || "—")}`,
+        `Generated live for on-the-spot verification, ${new Date().toLocaleString("en-AU")}.`,
+      ];
+      const text = lines.join("\n");
+      if (navigator.share) {
+        await navigator.share({ title: "Chasin' Curves — Live Trip Log", text });
+      } else if (navigator.clipboard) {
+        await navigator.clipboard.writeText(text);
+        alert("Trip details copied — paste them wherever needed.");
+      }
+    } catch (e) {
+      if (e?.name !== "AbortError") alert("Couldn't share — try again.");
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  return (
+    <Modal title="Live Trip Log" subtitle="For on-the-spot verification" onClose={onClose} wide>
+      <div style={{ background: "#0a0a0a", border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 18, color: C.champagne }}>
+          {[vehicle?.year, vehicle?.make, vehicle?.model].filter(Boolean).join(" ") || "Vehicle"}
+        </div>
+        {vehicle?.regoState && <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>Registered {vehicle.regoState}</div>}
+        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 10, color: C.dim, letterSpacing: "0.05em" }}>STARTED</div>
+            <div style={{ fontSize: 13, color: C.bone, marginTop: 2 }}>{new Date(entry.timestamp).toLocaleString("en-AU")}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 10, color: C.dim, letterSpacing: "0.05em" }}>START ODOMETER</div>
+            <div style={{ fontSize: 13, color: C.bone, marginTop: 2 }}>{entry.odometerStart}</div>
+          </div>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <div style={{ fontSize: 10, color: C.dim, letterSpacing: "0.05em" }}>STARTED FROM</div>
+            <div style={{ fontSize: 13, color: C.bone, marginTop: 2 }}>{startIsHome ? "Home" : (startPlace || "Locating…")}</div>
+          </div>
+        </div>
+      </div>
+      <div style={{ position: "relative", height: 280, borderRadius: 8, overflow: "hidden", background: "#0a0f14" }}>
+        <div ref={mapContainer} style={{ position: "absolute", inset: 0 }} />
+        {mapFailed && (
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: C.dim, fontSize: 12, textAlign: "center", padding: 20 }}>
+            Waiting for a GPS fix…
+          </div>
+        )}
+      </div>
+      <div style={{ fontSize: 11, color: C.dim, marginTop: 10, textAlign: "center" }}>
+        Generated live, just now — {new Date().toLocaleTimeString("en-AU")}.
+      </div>
+      <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+        <Btn variant="ghost" onClick={onClose} style={{ flex: 1 }}>Close</Btn>
+        <Btn onClick={handleShare} disabled={sharing} style={{ flex: 1 }}>{sharing ? "Sharing…" : "Share"}</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+const ActiveTripBanner = ({ activeTrip, vehicleName, onStop, onDiscard, onLiveLog }) => {
   if (!activeTrip) return null;
   const elapsedMin = Math.max(0, Math.round((Date.now() - activeTrip.startedAt) / 60000));
   return (
@@ -2421,6 +2553,7 @@ const ActiveTripBanner = ({ activeTrip, vehicleName, onStop, onDiscard }) => {
           {activeTrip.points.length} point{activeTrip.points.length !== 1 ? "s" : ""}{!activeTrip.stopped ? ` · ${elapsedMin} min so far` : ""}
         </div>
       </div>
+      <Btn size="sm" variant="ghost" onClick={onLiveLog}>Live Log</Btn>
       {activeTrip.stopped && <Btn size="sm" variant="ghost" onClick={onDiscard}>Discard</Btn>}
       <Btn size="sm" onClick={onStop}>{activeTrip.stopped ? "Retry Save" : "Stop Trip"}</Btn>
     </div>
@@ -3350,6 +3483,7 @@ const App = () => {
   // the trail itself came back empty (permission denied throughout, etc.)
   // rather than letting a 0-point trail save invisibly.
   const [tripSavedNotice, setTripSavedNotice] = useState(null);
+  const [showLiveLog, setShowLiveLog] = useState(false);
   const tripSavedTimerRef = useRef(null);
   const gpsIntervalRef = useRef(null);
   // Session 15b: a dedicated second device (e.g. Chasin' Curves mounted for
@@ -3783,7 +3917,17 @@ const App = () => {
         })()}
         onStop={handleStopTrip}
         onDiscard={discardTrail}
+        onLiveLog={() => setShowLiveLog(true)}
       />
+      {showLiveLog && activeTrip && (
+        <LiveTripView
+          activeTrip={activeTrip}
+          entry={logbook.find(e => e.id === activeTrip.entryId)}
+          vehicle={currentUser.garage?.find(v => v.id === activeTrip.vehicleId)}
+          member={currentUser}
+          onClose={() => setShowLiveLog(false)}
+        />
+      )}
       <TripSavedNotice
         notice={tripSavedNotice}
         onDismiss={() => {
