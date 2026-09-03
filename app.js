@@ -1192,7 +1192,10 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
         setCardPreview({ url: URL.createObjectURL(blob) });
       }
     } catch (e) {
-      if (e?.name !== "AbortError") alert("Couldn't build the share card — check your connection and try again.");
+      if (e?.name !== "AbortError") {
+        console.error("[Chasin' Curves] share vehicle card build failed", e);
+        alert(`Couldn't build the share card — ${e?.message || "something went wrong"}. Try again, and if it keeps happening let Scott know what the error above says.`);
+      }
     } finally {
       setSharingCard(false);
     }
@@ -1789,7 +1792,6 @@ const loadImageEl = async (url, label) => {
         URL.revokeObjectURL(objectUrl);
         if (label) {
           console.warn(`[Chasin' Curves] ${label} fetched fine but couldn't be decoded as an image for the trip card.`, url);
-          alert(`Trip Postcard: ${label} fetched OK but wasn't a valid image.\n${url}`);
         }
         resolve(null);
       };
@@ -1798,7 +1800,6 @@ const loadImageEl = async (url, label) => {
   } catch (e) {
     if (label) {
       console.warn(`[Chasin' Curves] ${label} failed to load for the trip card — ${e.message}. Falling back gracefully.`, url);
-      alert(`Trip Postcard: ${label} didn't load.\n${e.message}\n${url}`);
     }
     return null;
   }
@@ -1873,7 +1874,6 @@ const drawTripCard = async ({ distanceKm, dateLabel, vehicleLabel, legCount, tra
   trail = clipTrailForPrivacy(trail, member);
   if (preClipLength > 0 && trail.length !== preClipLength) {
     console.warn(`[Chasin' Curves] privacy clip changed trail from ${preClipLength} to ${trail.length} points.`);
-    alert(`Trip Postcard debug — privacy clip changed trail from ${preClipLength} to ${trail.length} points.`);
   }
   await ensureFontsLoaded();
   const canvas = document.createElement("canvas");
@@ -2322,7 +2322,6 @@ const ShareDayModal = ({ logbook, garage, member, onClose }) => {
       if (ordered.some(e => (e.trail?.length || 0) > 0) || trail.length > 0) {
         const rawCounts = ordered.map(e => `${e.id}: ${e.trail?.length || 0} raw pts`).join(", ");
         console.warn(`[Chasin' Curves] share trail check — ${rawCounts} | combined: ${trail.length} pts | member.obscureHomeLocation: ${!!member?.obscureHomeLocation}`);
-        alert(`Trip Postcard debug — ${rawCounts}\nCombined trail: ${trail.length} pts\nPrivacy fence on: ${!!member?.obscureHomeLocation}`);
       }
       const blob = await drawTripCard({ distanceKm, dateLabel, vehicleLabel, legCount: ordered.length, trail, heroUrl, member });
       if (!blob) throw new Error("card render unavailable");
@@ -2340,7 +2339,19 @@ const ShareDayModal = ({ logbook, garage, member, onClose }) => {
       }
       return true;
     } catch (e) {
-      if (e?.name !== "AbortError") { alert("Couldn't build the share card — check your connection and try again."); return false; }
+      if (e?.name !== "AbortError") {
+        // Session 16u — the generic message told nobody, including us,
+        // what actually failed. Every layer inside drawTripCard already
+        // degrades gracefully on its own (missing photo, missing map,
+        // missing geocode all just render a plainer card, never throw),
+        // so anything that reaches this catch is a genuine, specific
+        // failure — log it in full so it's diagnosable from the console,
+        // and surface the real reason to whoever's looking rather than a
+        // guess ("check your connection") that's often not the cause.
+        console.error("[Chasin' Curves] share card build failed", e);
+        alert(`Couldn't build the share card — ${e?.message || "something went wrong"}. Try again, and if it keeps happening let Scott know what the error above says.`);
+        return false;
+      }
       return true;
     } finally {
       setBusy(null);
