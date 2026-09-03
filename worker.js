@@ -27,6 +27,20 @@
 //             optional `trail` array (opt-in per trip, written once when
 //             the trip is stopped, not streamed live). No new endpoint,
 //             same immutability rule, just one more optional field.
+// Session 17: Server-side points ledger. The whole app went login-gated
+//             well before this session, which made the old "roads/trips/
+//             reviews/alerts are public, no auth" comment stale — every
+//             caller already has a session token, so auth here costs zero
+//             extra friction. Added getAuthedEmail() + real awardPoints()
+//             calls to /roads, /trips, /reviews, /alerts, /garage/:id,
+//             /garage/:id/photo, and /logbook/:id/:entryId (on first
+//             odometerEnd completion only — guards against a double-award
+//             if that endpoint is ever called twice for one entry). Fixed
+//             PUT /member/:id to strip a client-supplied `points` field —
+//             Session 12 already stopped you setting someone ELSE'S points,
+//             this stops you setting your OWN. rate_road and daily_login
+//             are NOT wired: no rating-submission feature or login-tracking
+//             endpoint exists yet to hook into.
 // Endpoints: 27 total
 //
 // Secrets required in Cloudflare dashboard:
@@ -107,6 +121,50 @@ function parseGarage(raw) {
 }
 
 const R2_PUBLIC_BASE = 'https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev';
+
+// ── POINTS LEDGER — Session 17 ───────────────────────────────────────────
+// Server-side points, replacing the fully client-side system that let any
+// user set their own points via an unvalidated PUT /member body. Real
+// values migrated from app.js's old client-side POINT_ACTIONS config.
+// rate_road and daily_login are NOT included below — rate_road has no
+// server hook yet (no rating feature built), daily_login has no endpoint
+// at all yet. Both stay client-side/unawarded until those exist.
+const POINT_ACTIONS = {
+  add_vehicle: 50,
+  upload_photo: 15,
+  log_trip: 5,
+  add_road: 100,
+  plan_trip: 20,
+  write_review: 30,
+  report_alert: 25,
+};
+
+const MEMBER_PROTECTED_FIELDS = ['points'];
+function stripProtectedFields(body) {
+  const clean = { ...body };
+  for (const f of MEMBER_PROTECTED_FIELDS) delete clean[f];
+  return clean;
+}
+
+async function awardPoints(env, email, amount, reason, meta = {}) {
+  if (!email || !amount || amount <= 0) return;
+  const ledgerKey = `points_ledger:${email}`;
+  const ledger = JSON.parse(await env.CURVES_KV.get(ledgerKey) || '[]');
+  ledger.push({ amount, reason, meta, timestamp: Date.now() });
+  await env.CURVES_KV.put(ledgerKey, JSON.stringify(ledger));
+
+  const raw = await env.CURVES_KV.get(`member:${email}`);
+  if (!raw) return;
+  const member = JSON.parse(raw);
+  member.points = (member.points || 0) + amount;
+  await env.CURVES_KV.put(`member:${email}`, JSON.stringify(member));
+}
+
+// TGM formulas — spanner-scaled, not wired to any live endpoint yet since
+// TGM itself is held back pre-launch. Kept here so the module is complete
+// and ready the moment /tgm/guides routes get built.
+function tgmGenerationReward(spannerRating) { return 100 + 40 * spannerRating; }
+function tgmDebriefReward(spannerRating) { return 20 + 10 * spannerRating; }
 
 // ── RESEND EMAIL — verification code ────────────────────────────────────────
 async function sendCodeEmail(resendKey, toEmail, code) {
@@ -236,17 +294,33 @@ export default {
         return json(val ? JSON.parse(val) : []);
       }
       if (method === 'POST') {
+        // Session 17: was public/no-auth on the theory that email login was
+        // only for paid users — no longer true, the whole app is login-
+        // gated now, so every caller here already has a session token.
+        // Auth costs zero extra friction and closes the addedBy-spoofing gap.
+        const authedEmail = await getAuthedEmail(request, env);
+        if (!authedEmail) return err('Not authenticated', 401);
+
         const body = await request.json();
+        const road = { ...body, addedBy: authedEmail }; // override — never trust client value
         const roads = JSON.parse(await env.CURVES_KV.get('roads') || '[]');
-        roads.push(body);
+        roads.push(road);
         await env.CURVES_KV.put('roads', JSON.stringify(roads));
-        return json({ ok: true });
+        await awardPoints(env, authedEmail, POINT_ACTIONS.add_road, 'add_road', { roadId: road.id });
+        return json({ ok: true, road });
       }
     }
 
-    // PUT /roads/:id
+    // PUT /roads/:id — auth added for correct attribution. No points award
+    // here yet: this also handles road edits generally, and rate_road has
+    // no dedicated rating submission built (no api.rateRoad() call exists
+    // in app.js), so there's no safe way yet to tell "a new rating" apart
+    // from "an unrelated edit". Add the award once that feature exists.
     const roadMatch = path.match(/^\/roads\/([^/]+)$/);
     if (roadMatch && method === 'PUT') {
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+
       const id = roadMatch[1];
       const body = await request.json();
       const roads = JSON.parse(await env.CURVES_KV.get('roads') || '[]');
@@ -287,8 +361,12 @@ export default {
       }
       if (method === 'PUT') {
         const body = await request.json();
+        // Session 17: points can no longer be set via client body — the
+        // only writer is awardPoints(). This closes the last self-award
+        // gap (Session 12 already stopped setting SOMEONE ELSE'S points).
+        const safeBody = stripProtectedFields(body);
         const existing = JSON.parse(await env.CURVES_KV.get(`member:${id}`) || '{}');
-        await env.CURVES_KV.put(`member:${id}`, JSON.stringify({ ...existing, ...body, id }));
+        await env.CURVES_KV.put(`member:${id}`, JSON.stringify({ ...existing, ...safeBody, id }));
         return json({ ok: true });
       }
     }
@@ -448,6 +526,7 @@ export default {
       }
 
       await env.CURVES_KV.put(`garage:${userId}`, JSON.stringify(garage));
+      await awardPoints(env, authedEmail, POINT_ACTIONS.upload_photo, 'upload_photo', { vehicleId, photoId });
       return json({ ok: true, photoId, url: photoUrl });
     }
 
@@ -469,7 +548,20 @@ export default {
         if (serialised.length > 80000) {
           return err('Payload too large — use /garage/:id/photo for images', 413);
         }
+
+        // Session 17: award add_vehicle only for genuinely NEW vehicles —
+        // this route also handles edits/reorders to an existing garage, so
+        // a diff against the old state is required (can't just award on
+        // every PUT, that would pay out on every edit).
+        const oldGarage = parseGarage(await env.CURVES_KV.get(`garage:${id}`));
+        const oldIds = new Set(oldGarage.map(v => v.id));
+        const newlyAdded = garage.filter(v => !oldIds.has(v.id));
+
         await env.CURVES_KV.put(`garage:${id}`, serialised);
+
+        for (const vehicle of newlyAdded) {
+          await awardPoints(env, id, POINT_ACTIONS.add_vehicle, 'add_vehicle', { vehicleId: vehicle.id });
+        }
         return json({ ok: true });
       }
     }
@@ -539,6 +631,11 @@ export default {
       }
 
       await env.CURVES_KV.put(`logbook:${userId}`, JSON.stringify(entries));
+      // Session 17 correction: log_trip does NOT award here. First pass
+      // wrongly put it on completion — the real, established trigger
+      // (confirmed by app.js's own comment: "was firing even on a failed
+      // log attempt") is a successful trip START, awarded below in the
+      // POST handler instead.
       return json({ ok: true });
     }
 
@@ -579,27 +676,45 @@ export default {
         };
         entries.push(entry);
         await env.CURVES_KV.put(`logbook:${id}`, JSON.stringify(entries));
+        // Session 17: log_trip awards here, on successful trip creation —
+        // this is the real, established trigger (see the PUT handler's
+        // comment above for why it's NOT on completion).
+        await awardPoints(env, authedEmail, POINT_ACTIONS.log_trip, 'log_trip', { entryId: entry.id });
         return json({ ok: true, entry });
       }
     }
 
-    // ── Trips — public, no auth (organiser tagged by email client-side) ─────
+    // ── Trips — Session 17: auth added (see /roads comment above for why) ───
     if (path === '/trips') {
       if (method === 'GET') {
         const val = await env.CURVES_KV.get('trips');
         return json(val ? JSON.parse(val) : []);
       }
       if (method === 'POST') {
+        // Session 17: same reasoning as /roads — app is fully login-gated
+        // now, auth here is free (no new friction) and closes the
+        // createdBy-spoofing gap.
+        const authedEmail = await getAuthedEmail(request, env);
+        if (!authedEmail) return err('Not authenticated', 401);
+
         const body = await request.json();
+        const trip = { ...body, createdBy: authedEmail }; // override, matches app.js's own field name
         const trips = JSON.parse(await env.CURVES_KV.get('trips') || '[]');
-        trips.push(body);
+        trips.push(trip);
         await env.CURVES_KV.put('trips', JSON.stringify(trips));
-        return json({ ok: true });
+        await awardPoints(env, authedEmail, POINT_ACTIONS.plan_trip, 'plan_trip', { tripId: trip.id });
+        return json({ ok: true, trip });
       }
     }
 
+    // PUT /trips/:id — this is the "join a trip" path (attendees array),
+    // not trip creation, so no points award here — joining isn't a scored
+    // action. Auth added anyway so attendee identity can't be spoofed.
     const tripMatch = path.match(/^\/trips\/([^/]+)$/);
     if (tripMatch && method === 'PUT') {
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+
       const id = tripMatch[1];
       const body = await request.json();
       const trips = JSON.parse(await env.CURVES_KV.get('trips') || '[]');
@@ -610,21 +725,35 @@ export default {
       return json({ ok: true });
     }
 
-    // ── Reviews & Alerts — public, no auth ───────────────────────────────────
+    // ── Reviews & Alerts — Session 17: auth added, same reasoning as
+    // roads/trips above. Field names (reviewerId / reportedBy) are a
+    // best-guess convention — neither postReview nor postAlert has any
+    // call site in app.js yet, so there's no real form to confirm the
+    // exact shape against. Confirm/adjust once those UIs get built. ───────
     if (path === '/reviews' && method === 'POST') {
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+
       const body = await request.json();
+      const review = { ...body, reviewerId: authedEmail };
       const reviews = JSON.parse(await env.CURVES_KV.get('reviews') || '[]');
-      reviews.push(body);
+      reviews.push(review);
       await env.CURVES_KV.put('reviews', JSON.stringify(reviews));
-      return json({ ok: true });
+      await awardPoints(env, authedEmail, POINT_ACTIONS.write_review, 'write_review', { roadId: review.roadId });
+      return json({ ok: true, review });
     }
 
     if (path === '/alerts' && method === 'POST') {
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+
       const body = await request.json();
+      const alert = { ...body, reportedBy: authedEmail };
       const alerts = JSON.parse(await env.CURVES_KV.get('alerts') || '[]');
-      alerts.push(body);
+      alerts.push(alert);
       await env.CURVES_KV.put('alerts', JSON.stringify(alerts));
-      return json({ ok: true });
+      await awardPoints(env, authedEmail, POINT_ACTIONS.report_alert, 'report_alert', { roadId: alert.roadId });
+      return json({ ok: true, alert });
     }
 
     return err('Not found', 404);

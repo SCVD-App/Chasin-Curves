@@ -12,7 +12,7 @@
 //       account-isolation gap found in beta.
 // ============================================================
 
-const { useState, useEffect, useRef, useCallback } = React;
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 // ─── PALETTE ────────────────────────────────────────────────
 const C = {
@@ -65,8 +65,11 @@ const authedFetch = async (url, options = {}) => {
 
 const api = {
   getRoads: () => fetch(`${API}/roads`).then(r => r.json()),
-  postRoad: (road) => fetch(`${API}/roads`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(road) }).then(r => r.json()),
-  updateRoad: (id, updates) => fetch(`${API}/roads/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }).then(r => r.json()),
+  // Session 17: switched to authedFetch — the app is fully login-gated
+  // now, so every caller already has a session token; the worker now
+  // requires it too (see worker.js Session 17 note).
+  postRoad: (road) => authedFetch(`${API}/roads`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(road) }),
+  updateRoad: (id, updates) => authedFetch(`${API}/roads/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }),
 
   // ── Auth ──
   requestCode: (email) => fetch(`${API}/auth/request`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ email }) }).then(async r => {
@@ -97,10 +100,10 @@ const api = {
   saveTrail: (id, entryId, trail) => authedFetch(`${API}/logbook/${id}/${entryId}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ trail }) }),
 
   getTrips: () => fetch(`${API}/trips`).then(r => r.json()),
-  postTrip: (trip) => fetch(`${API}/trips`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(trip) }).then(r => r.json()),
-  updateTrip: (id, updates) => fetch(`${API}/trips/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }).then(r => r.json()),
-  postReview: (review) => fetch(`${API}/reviews`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(review) }).then(r => r.json()),
-  postAlert: (alert) => fetch(`${API}/alerts`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(alert) }).then(r => r.json()),
+  postTrip: (trip) => authedFetch(`${API}/trips`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(trip) }),
+  updateTrip: (id, updates) => authedFetch(`${API}/trips/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }),
+  postReview: (review) => authedFetch(`${API}/reviews`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(review) }),
+  postAlert: (alert) => authedFetch(`${API}/alerts`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(alert) }),
 };
 
 // ─── SEED DATA ───────────────────────────────────────────────
@@ -763,13 +766,21 @@ const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
 };
 
 // ─── ROAD DETAIL ─────────────────────────────────────────────
-const RoadDetail = ({ road, onClose, currentUser, onPointsEarned, onOpenProfile }) => {
+const RoadDetail = ({ road, onClose, currentUser, onOpenProfile }) => {
   const [tab, setTab] = useState("overview");
   const tabs = [["overview","Overview"],["ratings","Ratings"],["logistics","Logistics"],["alerts",`Alerts${road.alerts.length ? ` (${road.alerts.length})` : ""}`]];
 
+  // Session 17: "Write a Review" and "Report an Issue" never actually
+  // called api.postReview()/api.postAlert() — they just awarded points
+  // client-side and showed a fake success alert, with nothing ever
+  // persisted anywhere. That was a live, repeatable, no-cost points
+  // exploit (tap the button as many times as you like). Disabled honestly
+  // rather than left live — the server now requires a real POST /reviews
+  // or POST /alerts call to award anything at all (worker.js Session 17),
+  // and neither of those has a real submission form built yet. Build the
+  // actual review/alert forms before re-enabling these buttons for real.
   const handleReview = () => {
-    onPointsEarned("write_review");
-    alert("Review submitted! +30 points");
+    alert("Reviews aren't live yet — coming soon.");
   };
 
   return (
@@ -875,7 +886,7 @@ const RoadDetail = ({ road, onClose, currentUser, onPointsEarned, onOpenProfile 
                 })
             }
             <div style={{ marginTop: 14, textAlign: "center" }}>
-              <Btn variant="danger" size="sm" onClick={() => { onPointsEarned("report_alert"); alert("Alert reported! +25 points"); }}>Report an Issue</Btn>
+              <Btn variant="danger" size="sm" onClick={() => alert("Alert reporting isn't live yet — coming soon.")}>Report an Issue</Btn>
             </div>
           </>
         )}
@@ -1017,7 +1028,7 @@ const AddedByLink = ({ memberId, onOpen, style: sx }) => {
 };
 
 // ─── GARAGE SECTION ──────────────────────────────────────────
-const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh, onSelectVehicle }) => {
+const GarageView = ({ member, onUpdate, onRefresh, onRefreshPoints, onSelectVehicle }) => {
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ make: "", model: "", year: "", variant: "", colour: "", notes: "", regoState: "", vicDayCap: 90, regoAnniversary: "" });
@@ -1034,8 +1045,14 @@ const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh, onSelectVehic
     if (!form.make || !form.model) return;
     setSaving(true);
     const v = { id: `v${Date.now()}`, ...form, avatar: null, primary: member.garage.length === 0 };
+    // Session 17: onUpdate() -> updateCurrentUser() already calls
+    // api.saveGarage(), which the server now awards add_vehicle points
+    // for (worker.js, diffing old vs new garage for genuinely new IDs).
+    // The old onPointsEarned("add_vehicle") call that used to sit here
+    // was a straight double-award — removed, replaced with a real
+    // points refresh from the server instead of a client-side guess.
     await onUpdate({ ...member, garage: [...member.garage, v] });
-    onPointsEarned("add_vehicle");
+    await onRefreshPoints?.();
     setForm({ make: "", model: "", year: "", variant: "", colour: "", notes: "", regoState: "", vicDayCap: 90, regoAnniversary: "" });
     setShowAdd(false);
     setSaving(false);
@@ -1054,11 +1071,24 @@ const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh, onSelectVehic
     formData.append("vehicleId", vehicleId);
     formData.append("setAsHero", "true");
     try {
-      const res = await fetch(`${API}/garage/${member.id}/photo`, { method: "PUT", body: formData });
-      if (!res.ok) throw new Error("Upload failed");
-      onPointsEarned("upload_photo");
+      // Session 17: was a raw fetch() with no Authorization header at all —
+      // this would have started failing with 401 the moment PUT
+      // /garage/:id/photo required auth. authedFetch adds the session
+      // token and leaves everything else (including the FormData body)
+      // untouched — Content-Type for multipart is still set by the
+      // browser automatically, authHeaders() only adds Authorization.
+      // Note: authedFetch only throws on 401/403 — other errors (e.g.
+      // "Maximum 10 photos per vehicle") come back as a resolved
+      // {error: "..."} body, same as it always has for every other
+      // authedFetch call in this file, so check for that explicitly
+      // rather than assuming success.
+      const res = await authedFetch(`${API}/garage/${member.id}/photo`, { method: "PUT", body: formData });
+      if (res?.error) throw new Error(res.error);
+      // Server now awards upload_photo — old onPointsEarned() call removed.
+      await onRefreshPoints?.();
       if (onRefresh) await onRefresh();
     } catch (err) {
+      if (err?.authFailed) throw err; // let the caller's sign-out handling catch this
       alert(`Photo upload failed: ${err.message}`);
     }
   };
@@ -1155,7 +1185,7 @@ const GarageView = ({ member, onUpdate, onPointsEarned, onRefresh, onSelectVehic
 };
 
 // ─── VEHICLE DETAIL SCREEN ───────────────────────────────────
-const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRefresh }) => {
+const VehicleDetail = ({ vehicle, member, onUpdate, onRefreshPoints, onBack, onRefresh }) => {
   const [tab, setTab] = useState("gallery");
   const [fullscreen, setFullscreen] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -1228,18 +1258,18 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onPointsEarned, onBack, onRe
         formData.append("photo", file);
         formData.append("vehicleId", vehicle.id);
         formData.append("setAsHero", String(existing.length === 0));
-        const res = await fetch(`${API}/garage/${member.id}/photo`, {
-          method: "PUT",
-          body: formData,
-        });
-        if (!res.ok) {
-          const d = await res.json().catch(() => ({}));
-          throw new Error(d.error || `Upload failed (${res.status})`);
-        }
-        onPointsEarned("upload_photo");
+        // Session 17: was a raw fetch() with no Authorization header — same
+        // bug and same fix as GarageView.handleAvatarUpload above. authedFetch
+        // only throws on 401/403, so a non-auth error still needs an
+        // explicit check against the returned body's `.error` field.
+        const res = await authedFetch(`${API}/garage/${member.id}/photo`, { method: "PUT", body: formData });
+        if (res?.error) throw new Error(res.error);
+        // Server now awards upload_photo — old onPointsEarned() call removed.
       }
+      await onRefreshPoints?.();
       await onRefresh();
     } catch (err) {
+      if (err?.authFailed) throw err;
       alert(`Photo upload failed: ${err.message}`);
     } finally {
       setSaving(false);
@@ -2235,7 +2265,158 @@ const TrailViewerModal = ({ entry, vehicleName, member, onClose }) => {
 // tick two or more and a "Share Combined" bar appears. Combining is now
 // something the person doing the sharing decides, leg by leg, instead of
 // something the calendar decides for them.
-const ShareDayModal = ({ logbook, garage, member, onClose }) => {
+// Session 17 — RoadSegmentPicker: lets a user pick just the worthwhile
+// SECTION of a drive as a road, rather than the whole trip. Pins snap to
+// actual points in the (already privacy-clipped) trail — never freeform —
+// so a pin can never land inside a member's obscured home zone, and every
+// resulting road coordinate is provably a real driven point.
+const RoadSegmentPicker = ({ trail, onConfirm, onCancel }) => {
+  const mapContainer = useRef(null);
+  const mapRef = useRef(null);
+  const startMarkerRef = useRef(null);
+  const endMarkerRef = useRef(null);
+  const [startIdx, setStartIdx] = useState(0);
+  const [endIdx, setEndIdx] = useState(trail.length - 1);
+  const [mapReady, setMapReady] = useState(false);
+
+  const segment = trail.slice(Math.min(startIdx, endIdx), Math.max(startIdx, endIdx) + 1);
+
+  const segmentKm = useMemo(() => {
+    let km = 0;
+    for (let i = 1; i < segment.length; i++) {
+      km += haversineKm(segment[i - 1].lat, segment[i - 1].lng, segment[i].lat, segment[i].lng);
+    }
+    return km;
+  }, [segment]);
+
+  const nearestTrailIndex = (lngLat) => {
+    let best = 0, bestDist = Infinity;
+    trail.forEach((p, i) => {
+      const d = haversineKm(p.lat, p.lng, lngLat.lat, lngLat.lng);
+      if (d < bestDist) { bestDist = d; best = i; }
+    });
+    return best;
+  };
+
+  const segmentGeoJSON = (seg) => ({
+    type: "Feature",
+    geometry: { type: "LineString", coordinates: seg.map(p => [p.lng, p.lat]) },
+  });
+
+  useEffect(() => {
+    if (mapRef.current || !window.mapboxgl || trail.length < 2) return;
+    window.mapboxgl.accessToken = MAPBOX_TOKEN;
+    const map = new window.mapboxgl.Map({
+      container: mapContainer.current,
+      style: "mapbox://styles/mapbox/dark-v11",
+      attributionControl: false,
+    });
+    map.addControl(new window.mapboxgl.NavigationControl({ showCompass: false }), "top-right");
+    map.addControl(new window.mapboxgl.AttributionControl({ compact: true }));
+
+    map.on("load", () => {
+      const tint = (layer, prop, value) => { try { map.setPaintProperty(layer, prop, value); } catch {} };
+      tint("water", "fill-color", "#0d1620");
+      tint("land", "background-color", C.midnight);
+
+      map.addSource("full-trail", {
+        type: "geojson",
+        data: { type: "Feature", geometry: { type: "LineString", coordinates: trail.map(p => [p.lng, p.lat]) } },
+      });
+      map.addLayer({
+        id: "full-trail-line", type: "line", source: "full-trail",
+        paint: { "line-color": C.dim || "#555", "line-width": 2, "line-opacity": 0.5 },
+      });
+
+      map.addSource("segment", { type: "geojson", data: segmentGeoJSON(segment) });
+      map.addLayer({
+        id: "segment-line", type: "line", source: "segment",
+        paint: { "line-color": C.champagne, "line-width": 4 },
+      });
+
+      const lngs = trail.map(p => p.lng), lats = trail.map(p => p.lat);
+      map.fitBounds([[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]], { padding: 40, duration: 0 });
+
+      mapRef.current = map;
+      setMapReady(true);
+    });
+
+    return () => { map.remove(); mapRef.current = null; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- trail is fixed for this modal's lifetime
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    map.getSource("segment")?.setData(segmentGeoJSON(segment));
+
+    const mkMarker = (ref, idx, color) => {
+      const p = trail[idx];
+      if (!ref.current) {
+        const el = document.createElement("div");
+        el.style.cssText = `width:16px;height:16px;border-radius:50%;background:${color};border:2px solid #fff;cursor:grab;box-shadow:0 0 8px ${color}88;`;
+        ref.current = new window.mapboxgl.Marker({ element: el, draggable: true }).setLngLat([p.lng, p.lat]).addTo(map);
+      } else {
+        ref.current.setLngLat([p.lng, p.lat]);
+      }
+    };
+    mkMarker(startMarkerRef, startIdx, C.champagne);
+    mkMarker(endMarkerRef, endIdx, C.blue || C.champagne);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startIdx, endIdx, mapReady]);
+
+  useEffect(() => {
+    if (!startMarkerRef.current || !endMarkerRef.current) return;
+    const onStartDragEnd = () => setStartIdx(nearestTrailIndex(startMarkerRef.current.getLngLat()));
+    const onEndDragEnd = () => setEndIdx(nearestTrailIndex(endMarkerRef.current.getLngLat()));
+    startMarkerRef.current.on("dragend", onStartDragEnd);
+    endMarkerRef.current.on("dragend", onEndDragEnd);
+    return () => {
+      startMarkerRef.current?.off("dragend", onStartDragEnd);
+      endMarkerRef.current?.off("dragend", onEndDragEnd);
+    };
+  }, [mapReady]);
+
+  const handleConfirm = () => {
+    if (segment.length < 2) return;
+    onConfirm({
+      startLat: String(segment[0].lat), startLng: String(segment[0].lng),
+      endLat: String(segment[segment.length - 1].lat), endLng: String(segment[segment.length - 1].lng),
+      distance: `${segmentKm.toFixed(1)}km`,
+      _prefilledFromTrip: true,
+    });
+  };
+
+  if (trail.length < 2) {
+    return <div style={{ padding: 20, fontSize: 13, color: C.dim, textAlign: "center" }}>
+      Not enough trail data to pick a section — this drive's GPS trail was too short or fully privacy-clipped.
+    </div>;
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, padding: "0 4px" }}>
+        Drag the two pins to mark the section worth adding.
+      </div>
+      <div ref={mapContainer} style={{ height: 260, borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}` }} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, padding: "0 4px" }}>
+        <span style={{ fontSize: 13, color: C.champagne }}>{segmentKm.toFixed(1)}km selected</span>
+        <span style={{ fontSize: 11, color: C.dim }}>{segment.length} of {trail.length} pts</span>
+      </div>
+      <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+        <Btn variant="ghost" onClick={onCancel} style={{ flex: 1 }}>Not this one</Btn>
+        <Btn onClick={handleConfirm} style={{ flex: 2 }}>Add this section as a Road</Btn>
+      </div>
+    </div>
+  );
+};
+
+const ShareDayModal = ({ logbook, garage, member, onClose, onProposeRoad }) => {
+  // pickingRoadFor: the entry currently being turned into a road segment
+  // pick, or null. Kept separate from the share/preview state above —
+  // these are two independent actions off the same logged trip, not
+  // alternatives to each other.
+  const [pickingRoadFor, setPickingRoadFor] = useState(null);
   const [busy, setBusy] = useState(null); // build key currently in flight — see buildKey()
   const [preview, setPreview] = useState(null); // { url } — fallback when Web Share can't take files
   const [selected, setSelected] = useState(() => new Set()); // entry ids picked for a combined card
@@ -2374,6 +2555,21 @@ const ShareDayModal = ({ logbook, garage, member, onClose }) => {
 
   const selectedKey = buildKey(shareable.filter(e => selected.has(e.id)));
 
+  // Picking a road segment for one specific entry — swaps the whole modal
+  // body to the picker rather than layering another modal on top.
+  if (pickingRoadFor) {
+    const safeTrail = clipTrailForPrivacy(resolveEntryTrail(pickingRoadFor), member);
+    return (
+      <Modal title="Add as a Road" subtitle={vehicleName(pickingRoadFor.vehicleId)} onClose={() => setPickingRoadFor(null)}>
+        <RoadSegmentPicker
+          trail={safeTrail}
+          onCancel={() => setPickingRoadFor(null)}
+          onConfirm={(prefill) => { setPickingRoadFor(null); onProposeRoad(prefill); onClose(); }}
+        />
+      </Modal>
+    );
+  }
+
   return (
     <Modal title="Share a Trip" subtitle="Turns one or more logged trips into a shareable card" onClose={onClose}>
       {shareable.length === 0 && (
@@ -2400,6 +2596,9 @@ const ShareDayModal = ({ logbook, garage, member, onClose }) => {
                 {new Date(entry.timestamp).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' })} · {Math.round(entry.odometerEnd - entry.odometerStart)}km{trailNote ? ` · ${trailNote}` : ""}
               </div>
             </div>
+            {entry.trail?.length > 1 && (
+              <Btn size="sm" variant="ghost" onClick={() => setPickingRoadFor(entry)}>Add as Road</Btn>
+            )}
             <Btn size="sm" onClick={() => buildAndShare([entry])} disabled={!!busy}>{busy === entry.id ? "Building…" : "Share"}</Btn>
           </div>
         );
@@ -2638,7 +2837,7 @@ const InAppBrowserWarning = ({ appName, onDismiss }) => {
   );
 };
 
-const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPointsEarned }) => {
+const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onRefreshPoints, onProposeRoad }) => {
   const [showLog, setShowLog] = useState(false);
   const [viewingTrail, setViewingTrail] = useState(null);
   const [sharingTrip, setSharingTrip] = useState(false);
@@ -2652,7 +2851,13 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPoint
 
   const handleSubmit = async (vehicleId, odometerStart, trackGps) => {
     const ok = await onLogEntry(vehicleId, odometerStart, trackGps);
-    if (ok) onPointsEarned("log_trip"); // Session 16: was firing even on a failed log attempt
+    // Session 17: server now awards log_trip on successful POST
+    // /logbook/:id (worker.js Session 17) — matching where this has
+    // always actually fired (trip START, confirmed by the Session 16
+    // comment this replaces: "was firing even on a failed log attempt").
+    // My first pass at the server side wrongly put this award on trip
+    // COMPLETION instead — moved to match the real, established behaviour.
+    if (ok) await onRefreshPoints?.();
     return ok;
   };
 
@@ -2745,14 +2950,14 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onPoint
       )}
 
       {sharingTrip && (
-        <ShareDayModal logbook={logbook} garage={garage} member={member} onClose={() => setSharingTrip(false)} />
+        <ShareDayModal logbook={logbook} garage={garage} member={member} onClose={() => setSharingTrip(false)} onProposeRoad={onProposeRoad} />
       )}
     </div>
   );
 };
 
 // ─── TRIP PLANNER ─────────────────────────────────────────────
-const TripPlanner = ({ roads, trips, setTrips, currentUser, onPointsEarned }) => {
+const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) => {
   const [showNew, setShowNew] = useState(false);
   const [form, setForm] = useState({ title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "" });
 
@@ -2764,8 +2969,10 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onPointsEarned }) =>
       createdBy: currentUser.id, attendees: [{ memberId: currentUser.id, vehicleId: form.vehicleId }],
       createdAt: new Date().toISOString(),
     };
-    try { const res = await api.postTrip(trip); setTrips(prev => [...prev, res.trip || trip]); } catch { setTrips(prev => [...prev, trip]); }
-    onPointsEarned("plan_trip");
+    // Session 17: api.postTrip() now hits the server-awarded POST /trips
+    // (worker.js Session 17) — the old onPointsEarned("plan_trip") call
+    // that used to sit here was a straight double-award, removed.
+    try { const res = await api.postTrip(trip); setTrips(prev => [...prev, res.trip || trip]); await onRefreshPoints?.(); } catch { setTrips(prev => [...prev, trip]); }
     setForm({ title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "" });
     setShowNew(false);
   };
@@ -3299,8 +3506,14 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
 };
 
 // ─── ADD ROAD FORM ───────────────────────────────────────────
-const AddRoadModal = ({ onClose, onAdd, onPointsEarned, currentUser }) => {
-  const [form, setForm] = useState({ name:"", region:"", state:"QLD", description:"", distance:"", duration:"", tags:"", startLat:"", startLng:"", endLat:"", endLng:"", busyTimes:"", fuel:"", food:"", meetups:"" });
+// Session 17: accepts an optional `initialValues` to prefill from a trip's
+// GPS trail (see RoadSegmentPicker below) — user still reviews/names/rates
+// before submitting, this only removes retyping coordinates the GPS
+// already captured. Also: onPointsEarned("add_road") removed from
+// handleSubmit — the server now awards add_road itself (worker.js Session
+// 17, POST /roads), so calling it here too would double-award every time.
+const AddRoadModal = ({ onClose, onAdd, currentUser, initialValues }) => {
+  const [form, setForm] = useState({ name:"", region:"", state:"QLD", description:"", distance:"", duration:"", tags:"", startLat:"", startLng:"", endLat:"", endLng:"", busyTimes:"", fuel:"", food:"", meetups:"", ...initialValues });
   const [ratings, setRatings] = useState({ driveability:3, accessibility:3, views:3, surface:3, thrill:3 });
   const set = (k,v) => setForm(f=>({...f,[k]:v}));
 
@@ -3318,12 +3531,12 @@ const AddRoadModal = ({ onClose, onAdd, onPointsEarned, currentUser }) => {
       ratings, reviews: 0, alerts: [], featured: false, verified: false,
       addedBy: currentUser?.id || "unknown", addedDate: new Date().toISOString().slice(0,10),
     });
-    onPointsEarned("add_road");
+    // Server awards add_road on successful POST /roads now — no client call here.
     onClose();
   };
 
   return (
-    <Modal title="Add a Road" subtitle="Share a road worth chasing · +100 points" onClose={onClose} wide>
+    <Modal title="Add a Road" subtitle={form._prefilledFromTrip ? "Prefilled from your drive · +100 points" : "Share a road worth chasing · +100 points"} onClose={onClose} wide>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
         <div style={{ gridColumn: "1/-1" }}><Input label="Road Name *" value={form.name} onChange={v=>set("name",v)} placeholder="e.g. Kenilworth–Maleny Road" /></div>
         <Input label="Region *" value={form.region} onChange={v=>set("region",v)} placeholder="Sunshine Coast Hinterland" />
@@ -3517,6 +3730,7 @@ const App = () => {
   const [selected, setSelected] = useState(null);
   const [screen, setScreen] = useState("roads");
   const [showAddRoad, setShowAddRoad] = useState(false);
+  const [roadPrefill, setRoadPrefill] = useState(null); // set by the Trip Postcard "Add as Road" flow
   const [selectedVehicle, setSelectedVehicle] = useState(null);
   const [showRoadDetail, setShowRoadDetail] = useState(false);
   const [viewingMemberId, setViewingMemberId] = useState(null);
@@ -3691,6 +3905,19 @@ const App = () => {
       if (Array.isArray(garage)) {
         setCurrentUser(prev => ({ ...prev, garage }));
       }
+    } catch (e) { if (e?.authFailed) handleSignOut(); }
+  }, [currentUser?.id, handleSignOut]);
+
+  // Session 17 — replaces the old client-side earnPoints() optimistic bump
+  // for every action the server now awards for real (add_road, add_vehicle,
+  // upload_photo, plan_trip, log_trip). Pulls the actual post-award total
+  // from the server rather than trusting a local guess, so the UI can
+  // never drift from what's really in the ledger.
+  const refreshPoints = useCallback(async () => {
+    if (!currentUser) return;
+    try {
+      const m = await api.getMember(currentUser.id);
+      setCurrentUser(prev => (prev ? { ...prev, points: m.points } : prev));
     } catch (e) { if (e?.authFailed) handleSignOut(); }
   }, [currentUser?.id, handleSignOut]);
 
@@ -4023,19 +4250,19 @@ const App = () => {
               {selected.verified && <Badge color={C.blue}>✓ Verified</Badge>}
               {selected.alerts?.length > 0 && <span style={{ color:C.red, fontSize:14 }}>⚠</span>}
             </div>
-            <RoadDetail road={selected} onClose={() => setShowRoadDetail(false)} currentUser={currentUser} onPointsEarned={earnPoints} onOpenProfile={setViewingMemberId} />
+            <RoadDetail road={selected} onClose={() => setShowRoadDetail(false)} currentUser={currentUser} onOpenProfile={setViewingMemberId} />
           </div>
         )}
 
         {screen === "garage" && (
           <div style={{ flex:1, overflowY:"auto", position:"relative" }}>
-            <GarageView member={currentUser} onUpdate={updateCurrentUser} onPointsEarned={earnPoints} onRefresh={refreshGarage} onSelectVehicle={v => setSelectedVehicle(v)} />
+            <GarageView member={currentUser} onUpdate={updateCurrentUser} onRefresh={refreshGarage} onRefreshPoints={refreshPoints} onSelectVehicle={v => setSelectedVehicle(v)} />
             {selectedVehicle && (
               <VehicleDetail
                 vehicle={currentUser.garage.find(v => v.id === selectedVehicle.id) || selectedVehicle}
                 member={currentUser}
                 onUpdate={updateCurrentUser}
-                onPointsEarned={earnPoints}
+                onRefreshPoints={refreshPoints}
                 onRefresh={refreshGarage}
                 onBack={() => setSelectedVehicle(null)}
               />
@@ -4045,13 +4272,13 @@ const App = () => {
 
         {screen === "trips" && (
           <div style={{ flex:1, overflowY:"auto" }}>
-            <TripPlanner roads={roads} trips={trips} setTrips={setTrips} currentUser={currentUser} onPointsEarned={earnPoints} />
+            <TripPlanner roads={roads} trips={trips} setTrips={setTrips} currentUser={currentUser} onRefreshPoints={refreshPoints} />
           </div>
         )}
 
         {screen === "logbook" && (
           <div style={{ flex:1, overflowY:"auto" }}>
-            <LogbookView member={currentUser} logbook={logbook} onLogEntry={handleLogTrip} onAddReturnOdometer={handleAddReturnOdometer} onPointsEarned={earnPoints} />
+            <LogbookView member={currentUser} logbook={logbook} onLogEntry={handleLogTrip} onAddReturnOdometer={handleAddReturnOdometer} onRefreshPoints={refreshPoints} onProposeRoad={prefill => { setRoadPrefill(prefill); setShowAddRoad(true); }} />
           </div>
         )}
 
@@ -4080,8 +4307,9 @@ const App = () => {
 
       {showAddRoad && (
         <AddRoadModal
-          onClose={() => setShowAddRoad(false)}
+          onClose={() => { setShowAddRoad(false); setRoadPrefill(null); }}
           currentUser={currentUser}
+          initialValues={roadPrefill}
           onAdd={async r => {
             try {
               const res = await api.postRoad(r);
@@ -4089,13 +4317,13 @@ const App = () => {
               setRoads(prev => [...prev, saved]);
               setSelected(saved);
               setShowRoadDetail(true);
+              await refreshPoints();
             } catch {
               setRoads(prev => [...prev, r]);
               setSelected(r);
               setShowRoadDetail(true);
             }
           }}
-          onPointsEarned={earnPoints}
         />
       )}
 
