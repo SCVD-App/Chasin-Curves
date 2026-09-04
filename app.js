@@ -385,6 +385,22 @@ const dayCountFor = (vehicle, entries) => {
 const GPS_POLL_INTERVAL_MS = 20000; // mid-point of the spec's 10–30s range
 const MAX_TRAIL_POINTS = 1500; // matches the worker's cap — generous, not unbounded
 const ACTIVE_TRIP_KEY = "cc_active_trip"; // local-first: survives a reload mid-trip
+const ROAD_DRAFT_KEY = "cc_road_draft"; // Session 17: same reasoning — a lost AddRoadModal form is exactly this failure mode
+
+const getStoredRoadDraft = (userId) => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(ROAD_DRAFT_KEY) || "null");
+    // Scoped to the user who started it — a shared/borrowed device
+    // shouldn't surface someone else's half-finished road.
+    return raw && raw.userId === userId ? raw : null;
+  } catch { return null; }
+};
+const setStoredRoadDraft = (userId, draft) => {
+  try {
+    if (draft) localStorage.setItem(ROAD_DRAFT_KEY, JSON.stringify({ userId, ...draft, savedAt: Date.now() }));
+    else localStorage.removeItem(ROAD_DRAFT_KEY);
+  } catch { /* storage unavailable — form still works for this session, just unprotected */ }
+};
 
 const getStoredActiveTrip = () => {
   try { return JSON.parse(localStorage.getItem(ACTIVE_TRIP_KEY) || "null"); }
@@ -2759,6 +2775,31 @@ const LiveTripView = ({ activeTrip, entry, vehicle, member, onClose }) => {
   );
 };
 
+// Session 17 — mirrors ActiveTripBanner exactly: a lost AddRoadModal draft
+// is the same "survives a reload mid-flow" failure mode as a lost trail
+// recording, so it gets the same visual treatment and the same distinction
+// between an ACCIDENTAL close (backdrop tap, stray click) and a DELIBERATE
+// one. Only the deliberate one wipes the draft — see the Modal's own
+// onClose vs. the Cancel button's onClick in AddRoadModal below.
+const RoadDraftBanner = ({ draft, onResume, onDiscard }) => {
+  if (!draft) return null;
+  return (
+    <div style={{ padding: "10px 16px", background: `${C.champagne}15`, borderBottom: `1px solid ${C.champagne}44`, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+      <span style={{ fontSize: 16 }}>📝</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12, color: C.champagne, fontWeight: 700 }}>
+          Unsaved road draft{draft.form?.name ? `: ${draft.form.name}` : ""}
+        </div>
+        <div style={{ fontSize: 10, color: C.dim, marginTop: 1 }}>
+          From {new Date(draft.savedAt).toLocaleString('en-AU', { weekday: 'short', hour: 'numeric', minute: '2-digit' })}
+        </div>
+      </div>
+      <Btn size="sm" variant="ghost" onClick={onDiscard}>Discard</Btn>
+      <Btn size="sm" onClick={onResume}>Resume</Btn>
+    </div>
+  );
+};
+
 const ActiveTripBanner = ({ activeTrip, vehicleName, onStop, onDiscard, onLiveLog }) => {
   if (!activeTrip) return null;
   const elapsedMin = Math.max(0, Math.round((Date.now() - activeTrip.startedAt) / 60000));
@@ -3514,8 +3555,19 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
 // 17, POST /roads), so calling it here too would double-award every time.
 const AddRoadModal = ({ onClose, onAdd, currentUser, initialValues }) => {
   const [form, setForm] = useState({ name:"", region:"", state:"QLD", description:"", distance:"", duration:"", tags:"", startLat:"", startLng:"", endLat:"", endLng:"", busyTimes:"", fuel:"", food:"", meetups:"", ...initialValues });
-  const [ratings, setRatings] = useState({ driveability:3, accessibility:3, views:3, surface:3, thrill:3 });
+  const [ratings, setRatings] = useState({ driveability:3, accessibility:3, views:3, surface:3, thrill:3, ...(initialValues?._ratings || {}) });
   const set = (k,v) => setForm(f=>({...f,[k]:v}));
+
+  // Session 17 — autosave every change to localStorage (cc_road_draft),
+  // so an OS popup/reload mid-form loses nothing. Skips saving while a
+  // prefill from the Trip Postcard flow is still settling in on first
+  // render — no point writing a draft in the same tick it was populated.
+  const isFirstRender = useRef(true);
+  useEffect(() => {
+    if (isFirstRender.current) { isFirstRender.current = false; return; }
+    if (!currentUser?.id) return;
+    setStoredRoadDraft(currentUser.id, { form, _ratings: ratings });
+  }, [form, ratings, currentUser?.id]);
 
   const handleSubmit = () => {
     if (!form.name || !form.region) return;
@@ -3532,6 +3584,15 @@ const AddRoadModal = ({ onClose, onAdd, currentUser, initialValues }) => {
       addedBy: currentUser?.id || "unknown", addedDate: new Date().toISOString().slice(0,10),
     });
     // Server awards add_road on successful POST /roads now — no client call here.
+    setStoredRoadDraft(currentUser?.id, null); // submitted — draft's job is done
+    onClose();
+  };
+
+  // Deliberate abandonment only — the Modal's own close (X / backdrop tap,
+  // wired below with the plain `onClose` prop) does NOT clear the draft.
+  // An accidental tap outside the form shouldn't cost you the form.
+  const handleCancel = () => {
+    setStoredRoadDraft(currentUser?.id, null);
     onClose();
   };
 
@@ -3572,7 +3633,7 @@ const AddRoadModal = ({ onClose, onAdd, currentUser, initialValues }) => {
         ))}
       </div>
       <div style={{ display:"flex", gap:10, marginTop:20 }}>
-        <Btn variant="ghost" onClick={onClose} style={{ flex:1 }}>Cancel</Btn>
+        <Btn variant="ghost" onClick={handleCancel} style={{ flex:1 }}>Cancel</Btn>
         <Btn onClick={handleSubmit} style={{ flex:2 }}>Submit Road</Btn>
       </div>
     </Modal>
@@ -3709,6 +3770,7 @@ const App = () => {
   // the user switches to another screen — a component-local interval
   // would get torn down the moment LogbookView unmounted.
   const [activeTrip, setActiveTrip] = useState(() => getStoredActiveTrip());
+  const [roadDraft, setRoadDraft] = useState(null); // surfaced once currentUser.id is known — see the effect near loadUser
   // Session 16: a successful stop-and-save used to just clear activeTrip,
   // which meant the banner silently vanished with zero confirmation — a
   // real beta tester (Sandy, mid-trip) read that as "the trip disappeared"
@@ -3816,6 +3878,16 @@ const App = () => {
       if (Array.isArray(entries)) setLogbook(entries);
     } catch (e) { if (e?.authFailed) throw e; /* non-fatal otherwise — logbook just starts empty */ }
   };
+
+  // Session 17 — surfaces a leftover road draft once we actually know who's
+  // logged in (getStoredRoadDraft is scoped per-user). Runs on fresh login
+  // too, not just session restore, since the same device/browser could
+  // still be holding a draft from before a sign-out.
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    const draft = getStoredRoadDraft(currentUser.id);
+    if (draft) setRoadDraft(draft);
+  }, [currentUser?.id]);
 
   // ── Step 1: request a code sent to email ────────────────────
   const handleRequestCode = async (email) => {
@@ -4166,6 +4238,15 @@ const App = () => {
         onStop={handleStopTrip}
         onDiscard={discardTrail}
         onLiveLog={() => setShowLiveLog(true)}
+      />
+      <RoadDraftBanner
+        draft={roadDraft}
+        onResume={() => {
+          setRoadPrefill({ ...roadDraft.form, _ratings: roadDraft._ratings });
+          setShowAddRoad(true);
+          setRoadDraft(null); // banner's done its job — localStorage draft stays until submit/cancel inside the modal
+        }}
+        onDiscard={() => { setStoredRoadDraft(currentUser.id, null); setRoadDraft(null); }}
       />
       {showLiveLog && activeTrip && (
         <LiveTripView
