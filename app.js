@@ -104,6 +104,15 @@ const api = {
   updateTrip: (id, updates) => authedFetch(`${API}/trips/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }),
   postReview: (review) => authedFetch(`${API}/reviews`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(review) }),
   postAlert: (alert) => authedFetch(`${API}/alerts`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(alert) }),
+
+  // ── Pro membership — session-authenticated ──
+  createCheckout: (planId, successUrl, cancelUrl) => authedFetch(`${API}/create-checkout`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ planId, successUrl, cancelUrl }) }),
+  checkoutStatus: (sessionId) => authedFetch(`${API}/checkout-status?session_id=${encodeURIComponent(sessionId)}`),
+  // Server re-validates all 6 Pit Pass requirements itself — see worker.js
+  // Session 18 note on why this can no longer be a raw PUT /member field.
+  activatePitPass: (id) => authedFetch(`${API}/member/${id}/activate-pit-pass`, { method:"POST" }),
+  // Redeems ALL eligible 1000-proPoints blocks at once — see worker.js.
+  redeemPoints: (id) => authedFetch(`${API}/member/${id}/redeem-points`, { method:"POST" }),
 };
 
 // ─── SEED DATA ───────────────────────────────────────────────
@@ -243,6 +252,145 @@ const PitPassProgress = ({ member }) => {
           </div>
         );
       })}
+    </div>
+  );
+};
+
+// ─── PRO MEMBERSHIP ─────────────────────────────────────────
+// Mirrors worker.js's PRO_PLANS / isMemberPro exactly — keep both in sync
+// if pricing or the Pit Pass window ever changes. Pro gates: Trip
+// Postcards, Logbook (which is where Postcards are generated from), and
+// TGM (not live yet, nothing to gate). Garage stays free but capped at 1
+// vehicle — that cap is enforced server-side in PUT /garage/:id, not
+// here; this file only decides what UI to show. Add Roads is deliberately
+// NOT gated (was briefly gated this session, then corrected) — add_road
+// pays the most points of any action specifically so free users have a
+// real path toward earning free Pro months; gating the action that earns
+// them would defeat that. The actual points-for-Pro redemption isn't
+// built yet — see handoff.md.
+// Deliberately no lifetime tier on the public checkout — Scott wants this
+// app on a longer-term-subscription-shaped model given the opt-in
+// process, not a one-and-done. isMemberPro still checks proLifetime,
+// since worker.js's /admin/grant-pro can still comp one (Scott, beta
+// testers) — it's just never a purchasable option here.
+const PRO_PLANS = {
+  month1:  { label: "1 Month",   price: "$2.99",  amount: 299,  days: 30 },
+  month6:  { label: "6 Months",  price: "$11.99", amount: 1199, days: 180 },
+  month12: { label: "12 Months", price: "$19.99", amount: 1999, days: 365 },
+};
+
+// Points → free Pro redemption — mirrors worker.js's POINTS_PER_PRO_MONTH.
+// Spends member.proPoints (separate running balance, never member.points —
+// see worker.js's awardPoints() for why). Deliberately not promoted
+// anywhere except a plain line in the Points tab — see ProfileView below.
+const POINTS_PER_PRO_MONTH = 1000;
+
+const isMemberPro = member => {
+  if (!member) return false;
+  if (member.proLifetime) return true;
+  if (member.proExpiresAt && Date.now() < member.proExpiresAt) return true;
+  if (member.pitPassActivated) {
+    const activatedMs = new Date(member.pitPassActivated).getTime();
+    if (Number.isFinite(activatedMs) && Date.now() < activatedMs + PIT_PASS_DAYS * 86400000) return true;
+  }
+  return false;
+};
+
+const proStatusLabel = member => {
+  if (!member) return "Free";
+  if (member.proLifetime) return "Pro — Lifetime";
+  if (member.proExpiresAt && Date.now() < member.proExpiresAt) {
+    const daysLeft = Math.max(1, Math.ceil((member.proExpiresAt - Date.now()) / 86400000));
+    return `Pro — ${daysLeft} day${daysLeft !== 1 ? "s" : ""} left`;
+  }
+  if (member.pitPassActivated) {
+    const activatedMs = new Date(member.pitPassActivated).getTime();
+    const expiry = activatedMs + PIT_PASS_DAYS * 86400000;
+    if (Number.isFinite(activatedMs) && Date.now() < expiry) {
+      const daysLeft = Math.max(1, Math.ceil((expiry - Date.now()) / 86400000));
+      return `Pit Pass — ${daysLeft} day${daysLeft !== 1 ? "s" : ""} left`;
+    }
+  }
+  return "Free";
+};
+
+// Full-screen prompt swapped in for a Pro-gated screen (Logbook today —
+// Trip Postcards live inside it, so gating the screen covers both).
+const ProUpsell = ({ feature, description, onUpgrade }) => (
+  <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100%", padding:40, textAlign:"center" }}>
+    <div style={{ fontSize:36, marginBottom:14 }}>🔒</div>
+    <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:20, color:C.champagne, marginBottom:8 }}>{feature} is a Pro feature</div>
+    <div style={{ fontSize:13, color:C.dim, maxWidth:280, lineHeight:1.6, marginBottom:20 }}>{description}</div>
+    <Btn onClick={onUpgrade}>Upgrade to Pro</Btn>
+  </div>
+);
+
+// Pricing / checkout modal. Hosted Stripe Checkout, same redirect pattern
+// as Mic Drop and Cult Connections — no Stripe.js needed, /create-checkout
+// returns a session.url and this just navigates the tab there.
+const UpgradeModal = ({ onClose }) => {
+  const [loadingPlan, setLoadingPlan] = useState(null);
+  const [error, setError] = useState("");
+
+  const startCheckout = async (planId) => {
+    setError("");
+    setLoadingPlan(planId);
+    try {
+      const base = `${window.location.origin}${window.location.pathname}`;
+      const res = await authedFetch(`${API}/create-checkout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          planId,
+          // Stripe substitutes {CHECKOUT_SESSION_ID} itself — app.js reads
+          // it back on return to self-heal via /checkout-status in case
+          // the webhook hasn't landed yet (see App's payment-return effect).
+          successUrl: `${base}?payment=success&session_id={CHECKOUT_SESSION_ID}`,
+          cancelUrl: `${base}?payment=cancelled`,
+        }),
+      });
+      if (res?.error || !res?.url) throw new Error(res?.error || "Could not start checkout");
+      window.location.href = res.url;
+    } catch (e) {
+      setError(e.message || "Something went wrong — try again");
+      setLoadingPlan(null);
+    }
+  };
+
+  return (
+    <Modal title="Chasin' Curves Pro" subtitle="Trip Postcards · Logbook · TGM" onClose={onClose}>
+      <div style={{ fontSize:12, color:C.dim, lineHeight:1.6, marginBottom:16 }}>
+        One-time payment, no auto-renewal. The Garage stays free (1 vehicle) either way.
+      </div>
+      {Object.entries(PRO_PLANS).map(([id, plan]) => (
+        <div key={id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 14px", border:`1px solid ${C.border}`, borderRadius:10, marginBottom:10 }}>
+          <div>
+            <div style={{ fontSize:14, color:C.bone, fontWeight:600 }}>{plan.label}</div>
+            <div style={{ fontSize:11, color:C.dim }}>{plan.price} one-time</div>
+          </div>
+          <Btn size="sm" onClick={() => startCheckout(id)} disabled={loadingPlan !== null}>
+            {loadingPlan === id ? "Redirecting…" : "Select"}
+          </Btn>
+        </div>
+      ))}
+      {error && <div style={{ fontSize:12, color:C.red, marginTop:6 }}>{error}</div>}
+    </Modal>
+  );
+};
+
+// Banner shown once on return from Stripe Checkout — same visual language
+// as TripSavedNotice. See App's payment-return effect for when this fires.
+const PaymentNotice = ({ notice, onDismiss }) => {
+  if (!notice) return null;
+  const isError = notice.type === "error";
+  const isCancelled = notice.type === "cancelled";
+  const color = isError ? C.red : C.champagne;
+  const icon = isCancelled ? "↩️" : isError ? "⚠️" : "✅";
+  return (
+    <div style={{ padding: "10px 16px", background: `${color}15`, borderBottom: `1px solid ${color}44`, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+      <span style={{ fontSize: 16 }}>{icon}</span>
+      <div style={{ flex: 1, minWidth: 0, fontSize: 12, color, fontWeight: 700 }}>{notice.message}</div>
+      <Btn size="sm" variant="ghost" onClick={onDismiss}>Dismiss</Btn>
     </div>
   );
 };
@@ -1044,7 +1192,7 @@ const AddedByLink = ({ memberId, onOpen, style: sx }) => {
 };
 
 // ─── GARAGE SECTION ──────────────────────────────────────────
-const GarageView = ({ member, onUpdate, onRefresh, onRefreshPoints, onSelectVehicle }) => {
+const GarageView = ({ member, onUpdate, onRefresh, onRefreshPoints, onSelectVehicle, onUpgradeNeeded }) => {
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ make: "", model: "", year: "", variant: "", colour: "", notes: "", regoState: "", vicDayCap: 90, regoAnniversary: "" });
@@ -1134,8 +1282,24 @@ const GarageView = ({ member, onUpdate, onRefresh, onRefreshPoints, onSelectVehi
           <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, color: C.champagne }}>The Garage</div>
           <div style={{ fontSize: 11, color: C.dim, marginTop: 2 }}>Your fleet. Tap a ride to open it.</div>
         </div>
-        <Btn size="sm" onClick={() => setShowAdd(true)} disabled={saving}>{saving ? "Saving..." : "+ Add Vehicle"}</Btn>
+        <Btn
+          size="sm"
+          disabled={saving}
+          onClick={() => {
+            // Session 18: free plan caps the Garage at 1 vehicle — matches
+            // the server-side check in PUT /garage/:id, this is just the
+            // friendlier front door to it.
+            if (!isMemberPro(member) && member.garage.length >= 1) { onUpgradeNeeded?.(); return; }
+            setShowAdd(true);
+          }}
+        >
+          {saving ? "Saving..." : (!isMemberPro(member) && member.garage.length >= 1) ? "🔒 + Add Vehicle" : "+ Add Vehicle"}
+        </Btn>
       </div>
+
+      {!isMemberPro(member) && member.garage.length >= 1 && (
+        <div style={{ fontSize: 11, color: C.dim, marginTop: -12, marginBottom: 18 }}>Free plan is limited to 1 vehicle — upgrade to Pro for the full fleet.</div>
+      )}
 
       {member.garage.length === 0 && (
         <div style={{ textAlign: "center", padding: 40, color: C.dim }}>
@@ -3181,7 +3345,19 @@ const FAST_MONEY = [
   { id:"q28", category:"Life",   question:"Early bird or night owl?",      optA:"Early Bird 🐦",          optB:"Night Owl 🦉" },
 ];
 
-const ProfileView = ({ member, onUpdate, pointsLog }) => {
+const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints }) => {
+  const [redeeming, setRedeeming] = useState(false);
+  const [redeemError, setRedeemError] = useState("");
+  const [redeemSuccess, setRedeemSuccess] = useState(null); // { monthsGranted }
+
+  const handleRedeemClick = async () => {
+    setRedeeming(true); setRedeemError(""); setRedeemSuccess(null);
+    const res = await onRedeemPoints();
+    setRedeeming(false);
+    if (res?.error) setRedeemError(res.error);
+    else if (res?.ok) setRedeemSuccess({ monthsGranted: res.monthsGranted });
+  };
+
   const [tab, setTab] = useState("profile");
   const [editing, setEditing] = useState(false);
   const [privacyAddress, setPrivacyAddress] = useState(member.privacyHomeAddress || "");
@@ -3304,6 +3480,17 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
 
         {tab==="profile" && (
           <>
+            <div style={{ background: isMemberPro(member) ? `linear-gradient(135deg, ${C.champagne}22, ${C.champagne}08)` : "#0a0a0a", border:`1px solid ${isMemberPro(member) ? C.champagne+"66" : C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <div>
+                  <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne }}>🎟 Membership</div>
+                  <div style={{ fontSize:12, color:C.dim, marginTop:2 }}>{proStatusLabel(member)}</div>
+                </div>
+                {!member.proLifetime && (
+                  <Btn size="sm" onClick={onUpgrade}>{isMemberPro(member) ? "Add More Time" : "Upgrade"}</Btn>
+                )}
+              </div>
+            </div>
             <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
                 <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne }}>About Me</div>
@@ -3511,9 +3698,35 @@ const ProfileView = ({ member, onUpdate, pointsLog }) => {
                 </div>)}
               </div>
               <div style={{ marginTop:12, padding:10, background:"#111", borderRadius:8, fontSize:11, color:C.dim, lineHeight:1.6 }}>
-                ⏱ Points expire after <span style={{ color:C.champagne }}>90 days</span> — generous enough for an overseas trip.
+                🏆 Your lifetime tally — points never expire.
               </div>
             </div>
+            {/* Session 18 — points → Pro redemption. Deliberately plain,
+                not promoted: no gradient, no icon badge, tucked in the
+                Points tab rather than the Membership card. Uses
+                member.proPoints, not member.points — see worker.js. */}
+            {!member.proLifetime && (
+              <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
+                <div style={{ fontSize:13, color:C.bone, marginBottom:4 }}>Points → Pro</div>
+                <div style={{ fontSize:11, color:C.dim, marginBottom:10, lineHeight:1.6 }}>
+                  {POINTS_PER_PRO_MONTH.toLocaleString()} points redeems 1 free month of Pro (Trip Postcards, Logbook, TGM).
+                </div>
+                <div style={{ fontSize:11, color:C.dim, marginBottom:10 }}>
+                  {(member.proPoints || 0).toLocaleString()} points banked
+                </div>
+                {Math.floor((member.proPoints || 0) / POINTS_PER_PRO_MONTH) >= 1 ? (
+                  <Btn size="sm" variant="ghost" onClick={handleRedeemClick} disabled={redeeming}>
+                    {redeeming ? "Redeeming…" : `Redeem for ${Math.floor((member.proPoints || 0) / POINTS_PER_PRO_MONTH)} free month${Math.floor((member.proPoints || 0) / POINTS_PER_PRO_MONTH) !== 1 ? "s" : ""}`}
+                  </Btn>
+                ) : (
+                  <div style={{ fontSize:11, color:C.dim }}>
+                    {(POINTS_PER_PRO_MONTH - (member.proPoints || 0)).toLocaleString()} points to your next free month.
+                  </div>
+                )}
+                {redeemError && <div style={{ fontSize:11, color:C.red, marginTop:8 }}>{redeemError}</div>}
+                {redeemSuccess && <div style={{ fontSize:11, color:C.champagne, marginTop:8 }}>Redeemed {redeemSuccess.monthsGranted} free month{redeemSuccess.monthsGranted !== 1 ? "s" : ""} of Pro.</div>}
+              </div>
+            )}
             <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
               <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne, marginBottom:12 }}>How to Earn</div>
               {Object.entries(POINT_ACTIONS).map(([key,{points,label,icon}])=>(
@@ -3812,6 +4025,8 @@ const App = () => {
   // so a lazy-init read once is enough — no need to watch for changes.
   const [inAppBrowser] = useState(() => detectInAppBrowser());
   const [inAppWarningDismissed, setInAppWarningDismissed] = useState(false);
+  const [showUpgrade, setShowUpgrade] = useState(false);
+  const [paymentNotice, setPaymentNotice] = useState(null); // { type: "success"|"cancelled"|"error", message }
 
   // ── Sign out — clears session, forces back to login ────────
   // Stops any in-flight GPS polling too — otherwise a stale interval would
@@ -3878,6 +4093,52 @@ const App = () => {
       if (Array.isArray(entries)) setLogbook(entries);
     } catch (e) { if (e?.authFailed) throw e; /* non-fatal otherwise — logbook just starts empty */ }
   };
+
+  // Session 18 — return from Stripe Checkout. success_url carries Stripe's
+  // own {CHECKOUT_SESSION_ID}; this calls /checkout-status to self-heal in
+  // case the webhook hasn't landed yet (see worker.js's note on why —
+  // matches a real gap found in Cult Connections' original checkout),
+  // reloads the member so Pro unlocks immediately, then strips the query
+  // params so a refresh doesn't re-trigger this.
+  useEffect(() => {
+    if (!currentUser) return;
+    const params = new URLSearchParams(window.location.search);
+    const payment = params.get("payment");
+    if (!payment) return;
+
+    const cleanUrl = () => {
+      const cleanedUrl = new URL(window.location.href);
+      cleanedUrl.searchParams.delete("payment");
+      cleanedUrl.searchParams.delete("session_id");
+      window.history.replaceState({}, "", cleanedUrl.pathname + cleanedUrl.search);
+    };
+
+    if (payment === "cancelled") {
+      setPaymentNotice({ type: "cancelled", message: "Checkout cancelled — you weren't charged." });
+      cleanUrl();
+      return;
+    }
+
+    if (payment === "success") {
+      const sessionId = params.get("session_id");
+      if (!sessionId) { cleanUrl(); return; }
+      (async () => {
+        try {
+          const res = await api.checkoutStatus(sessionId);
+          if (res?.granted) {
+            await loadUser(currentUser.id);
+            setPaymentNotice({ type: "success", message: "You're Pro! Trip Postcards, Logbook and TGM are all unlocked." });
+          } else {
+            setPaymentNotice({ type: "error", message: "Payment received but not confirmed yet — check back in a minute, or email support@scvd.app." });
+          }
+        } catch {
+          setPaymentNotice({ type: "error", message: "Couldn't confirm payment automatically — email support@scvd.app if Pro doesn't unlock shortly." });
+        } finally {
+          cleanUrl();
+        }
+      })();
+    }
+  }, [currentUser?.id]);
 
   // Session 17 — surfaces a leftover road draft once we actually know who's
   // logged in (getStoredRoadDraft is scoped per-user). Runs on fresh login
@@ -3968,6 +4229,49 @@ const App = () => {
       await api.saveGarage(updated.id, garage || []);
     } catch (e) { if (e?.authFailed) handleSignOut(); }
   }, [handleSignOut]);
+
+  // Session 18 — Pit Pass activation now goes through its own endpoint
+  // (worker.js re-checks all 6 requirements server-side) instead of
+  // updateCurrentUser's raw PUT /member: pitPassActivated is a protected
+  // field now, so a PUT could never actually set it any more — using
+  // updateCurrentUser here would look like it worked (optimistic local
+  // state) and then silently revert on the next reload.
+  const handleActivatePitPass = useCallback(async () => {
+    if (!currentUser) return;
+    try {
+      const res = await api.activatePitPass(currentUser.id);
+      if (res?.pitPassActivated) {
+        setCurrentUser(prev => prev ? { ...prev, pitPassActivated: res.pitPassActivated } : prev);
+      } else if (res?.error) {
+        alert(res.error);
+      }
+    } catch (e) {
+      if (e?.authFailed) handleSignOut();
+    }
+  }, [currentUser, handleSignOut]);
+
+  // Session 18 — points → Pro redemption. Returns a plain {ok/error}
+  // result rather than throwing (matching every other authedFetch caller's
+  // "resolve with {error}" convention) so ProfileView can show the message
+  // inline without a try/catch of its own.
+  const handleRedeemPoints = useCallback(async () => {
+    if (!currentUser) return { error: "Not signed in" };
+    try {
+      const res = await api.redeemPoints(currentUser.id);
+      if (res?.ok) {
+        setCurrentUser(prev => prev ? {
+          ...prev,
+          proPoints: res.proPointsRemaining,
+          proExpiresAt: res.proExpiresAt,
+          proTier: prev.proTier || "redeemed",
+        } : prev);
+      }
+      return res;
+    } catch (e) {
+      if (e?.authFailed) { handleSignOut(); return { error: "Session expired" }; }
+      return { error: e.message || "Couldn't redeem points — try again" };
+    }
+  }, [currentUser, handleSignOut]);
 
   // ── Re-fetch garage from KV and sync into state ────────────
   const refreshGarage = useCallback(async () => {
@@ -4224,10 +4528,8 @@ const App = () => {
         <InAppBrowserWarning appName={inAppBrowser} onDismiss={() => setInAppWarningDismissed(true)} />
       )}
 
-      <PitPassBanner member={currentUser} onDismiss={() => {
-        const activated = new Date().toISOString();
-        updateCurrentUser({ ...currentUser, pitPassActivated: activated });
-      }} />
+      <PitPassBanner member={currentUser} onDismiss={handleActivatePitPass} />
+      <PaymentNotice notice={paymentNotice} onDismiss={() => setPaymentNotice(null)} />
 
       <ActiveTripBanner
         activeTrip={activeTrip}
@@ -4275,6 +4577,10 @@ const App = () => {
           {states.map(s => (
             <button key={s} onClick={()=>setFilterState(s)} style={{ padding:"5px 10px", borderRadius:6, border:"1px solid", borderColor:filterState===s?C.champagne:C.border2, background:filterState===s?C.champagneDim:"none", color:filterState===s?C.champagne:C.dim, fontSize:10, cursor:"pointer", textTransform:"uppercase", letterSpacing:"0.08em" }}>{s}</button>
           ))}
+          {/* Session 18 correction: Add Roads stays free for everyone — see
+              the PRO_PLANS comment above. add_road is the biggest points
+              payout specifically so free users have a real path to
+              earning Pro (that redemption isn't built yet — see handoff). */}
           <Btn size="sm" onClick={() => setShowAddRoad(true)}>+ Add</Btn>
         </div>
       )}
@@ -4337,7 +4643,7 @@ const App = () => {
 
         {screen === "garage" && (
           <div style={{ flex:1, overflowY:"auto", position:"relative" }}>
-            <GarageView member={currentUser} onUpdate={updateCurrentUser} onRefresh={refreshGarage} onRefreshPoints={refreshPoints} onSelectVehicle={v => setSelectedVehicle(v)} />
+            <GarageView member={currentUser} onUpdate={updateCurrentUser} onRefresh={refreshGarage} onRefreshPoints={refreshPoints} onSelectVehicle={v => setSelectedVehicle(v)} onUpgradeNeeded={() => setShowUpgrade(true)} />
             {selectedVehicle && (
               <VehicleDetail
                 vehicle={currentUser.garage.find(v => v.id === selectedVehicle.id) || selectedVehicle}
@@ -4359,13 +4665,21 @@ const App = () => {
 
         {screen === "logbook" && (
           <div style={{ flex:1, overflowY:"auto" }}>
-            <LogbookView member={currentUser} logbook={logbook} onLogEntry={handleLogTrip} onAddReturnOdometer={handleAddReturnOdometer} onRefreshPoints={refreshPoints} onProposeRoad={prefill => { setRoadPrefill(prefill); setShowAddRoad(true); }} />
+            {isMemberPro(currentUser) ? (
+              <LogbookView member={currentUser} logbook={logbook} onLogEntry={handleLogTrip} onAddReturnOdometer={handleAddReturnOdometer} onRefreshPoints={refreshPoints} onProposeRoad={prefill => { setRoadPrefill(prefill); setShowAddRoad(true); }} />
+            ) : (
+              <ProUpsell
+                feature="Logbook"
+                description="Compliant trip logging, GPS trails, and shareable Trip Postcards — all part of Pro."
+                onUpgrade={() => setShowUpgrade(true)}
+              />
+            )}
           </div>
         )}
 
         {screen === "profile" && (
           <div style={{ flex:1, overflowY:"auto" }}>
-            <ProfileView member={currentUser} onUpdate={updateCurrentUser} pointsLog={pointsLog} />
+            <ProfileView member={currentUser} onUpdate={updateCurrentUser} pointsLog={pointsLog} onUpgrade={() => setShowUpgrade(true)} onRedeemPoints={handleRedeemPoints} />
           </div>
         )}
       </div>
@@ -4392,21 +4706,34 @@ const App = () => {
           currentUser={currentUser}
           initialValues={roadPrefill}
           onAdd={async r => {
+            // Session 18: this used to fall back to adding the road to
+            // LOCAL state on any failure, including a rejected API call —
+            // which meant a real error (or, now, the new Pro-gate on
+            // POST /roads) still looked like a successful save until the
+            // next refresh quietly dropped it. authedFetch only throws on
+            // 401/403; every other failure (like the 402 "Pro feature"
+            // response) resolves normally with an {error} body, so that
+            // has to be checked explicitly rather than relying on catch.
             try {
               const res = await api.postRoad(r);
+              if (res?.error) {
+                alert(res.error);
+                return; // draft autosave already covers the form — nothing lost
+              }
               const saved = res.road || r;
               setRoads(prev => [...prev, saved]);
               setSelected(saved);
               setShowRoadDetail(true);
               await refreshPoints();
-            } catch {
-              setRoads(prev => [...prev, r]);
-              setSelected(r);
-              setShowRoadDetail(true);
+            } catch (e) {
+              if (e?.authFailed) { handleSignOut(); return; }
+              alert(`Couldn't add the road: ${e.message}`);
             }
           }}
         />
       )}
+
+      {showUpgrade && <UpgradeModal onClose={() => setShowUpgrade(false)} />}
 
       {viewingMemberId && (
         <MemberProfile

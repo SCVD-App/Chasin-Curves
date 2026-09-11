@@ -41,13 +41,64 @@
 //             this stops you setting your OWN. rate_road and daily_login
 //             are NOT wired: no rating-submission feature or login-tracking
 //             endpoint exists yet to hook into.
-// Endpoints: 27 total
+// Session 18: Stripe Pro membership. Pro is granted directly on the member
+//             record (proLifetime / proExpiresAt / proTier) rather than a
+//             redeemable token — the app already has authenticated
+//             identity, so there's no "lost token" failure mode to design
+//             around. Added /create-checkout, /webhook, /checkout-status
+//             (self-heal if the webhook hasn't landed by the time the user
+//             is redirected back — the exact gap found in Cult
+//             Connections' original checkout), and /admin/grant-pro. Pro
+//             gates added to /logbook/:id and /logbook/:id/:entryId
+//             (Logbook — this covers Trip Postcards too, since those are
+//             generated from logged trips; TGM has no live endpoint yet so
+//             there's nothing to gate there), and a new-vehicle cap on
+//             PUT /garage/:id (free = 1 vehicle; vehicles already over the
+//             cap are never removed, just no new ones while free).
+//             POST /roads was briefly Pro-gated too, then corrected mid-
+//             session: Scott confirmed Add Roads is meant to stay free —
+//             it's the whole point of add_road paying 100 points, which is
+//             meant to be a path to free Pro months (that redemption
+//             mechanic isn't built yet — see handoff.md). Also closed a
+//             real self-grant gap
+//             found while wiring this up: pitPassActivated now counts as
+//             Pro-equivalent (the free 7-day trial), but PUT /member/:id
+//             let a client set that field directly with zero server
+//             check — same class of bug as the points exploit fixed last
+//             session, it just wasn't a monetization risk until this
+//             session made pitPassActivated worth something. Fixed the
+//             same way: moved to a dedicated
+//             POST /member/:id/activate-pit-pass endpoint that re-checks
+//             all 6 PIT_PASS_REQUIREMENTS server-side before setting it,
+//             and added it plus the new pro fields to
+//             MEMBER_PROTECTED_FIELDS so PUT /member/:id can no longer
+//             set any of them directly. Also added
+//             POST /member/:id/redeem-points once Scott confirmed the
+//             original intent behind the points system: 1000 proPoints
+//             (a new balance, separate from the tier-badge `points` field
+//             — see awardPoints()) redeems 1 free month of Pro. Not
+//             publicised in the UI yet — just a plain line in the Points
+//             tab — until real accrual rates validate the number.
+// Endpoints: 34 total
 //
 // Secrets required in Cloudflare dashboard:
-//   RESEND_API_KEY   ← re_... from resend.com dashboard (already in use for Mic Drop)
+//   RESEND_API_KEY        ← re_... from resend.com dashboard (already in use for Mic Drop)
+//   STRIPE_SECRET_KEY     ← sk_live_... (or sk_test_... while testing)
+//   STRIPE_WEBHOOK_SECRET ← whsec_... — Dashboard → Developers → Webhooks → this
+//                           endpoint's signing secret, once you've added the endpoint below
+//   CURVES_ADMIN_KEY      ← any long random string you choose — shared secret
+//                           for /admin/grant-pro (comp access)
 //
 // KV binding: CURVES_KV (existing — now also holds authcode:{email} and session:{token})
 // R2 binding: MEDIA_BUCKET (existing)
+//
+// Stripe dashboard setup still needed before this goes live:
+//   1. Add a webhook endpoint pointing at this worker's /webhook URL,
+//      subscribed to checkout.session.completed. Copy its signing secret
+//      into STRIPE_WEBHOOK_SECRET above.
+//   2. Add STRIPE_SECRET_KEY and CURVES_ADMIN_KEY as encrypted env vars.
+//   3. Test in Stripe test mode first (sk_test_ key, card 4242 4242 4242
+//      4242 / any future date / any CVC) before flipping to sk_live_.
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -122,6 +173,24 @@ function parseGarage(raw) {
 
 const R2_PUBLIC_BASE = 'https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev';
 
+// Server-side mirror of app.js's PIT_PASS_REQUIREMENTS — used only to
+// validate a pitPassActivated claim before writing it (see
+// POST /member/:id/activate-pit-pass below). Keep in sync with app.js if
+// the requirements ever change; garage isn't part of the member KV record
+// so it's passed in separately (fetched from garage:{id}).
+const PIT_PASS_REQUIREMENTS_SERVER = [
+  m => !!m.avatar,
+  m => (m.bio || '').length > 10,
+  m => (m.location || '').length > 2,
+  m => Object.keys(m.fastMoney || {}).length >= 1,
+  m => (m.garage || []).length >= 1,
+  m => (m.garage || []).some(v => (v.photos || []).length > 0),
+];
+function checkPitPassServer(member, garage) {
+  const m = { ...member, garage: garage || [] };
+  return PIT_PASS_REQUIREMENTS_SERVER.every(fn => fn(m));
+}
+
 // ── POINTS LEDGER — Session 17 ───────────────────────────────────────────
 // Server-side points, replacing the fully client-side system that let any
 // user set their own points via an unvalidated PUT /member body. Real
@@ -139,7 +208,16 @@ const POINT_ACTIONS = {
   report_alert: 25,
 };
 
-const MEMBER_PROTECTED_FIELDS = ['points'];
+// Session 18: extended for Pro membership — a client PUT can no longer set
+// its own Pro status any more than it could set its own points. pitPassActivated
+// moved here too once it started conferring real Pro access; it's now only
+// ever set server-side by POST /member/:id/activate-pit-pass, which re-checks
+// eligibility itself before writing it.
+const MEMBER_PROTECTED_FIELDS = [
+  'points', 'proPoints',
+  'proLifetime', 'proExpiresAt', 'proTier', 'proPurchasedAt', 'proAppliedSessions',
+  'pitPassActivated',
+];
 function stripProtectedFields(body) {
   const clean = { ...body };
   for (const f of MEMBER_PROTECTED_FIELDS) delete clean[f];
@@ -157,6 +235,15 @@ async function awardPoints(env, email, amount, reason, meta = {}) {
   if (!raw) return;
   const member = JSON.parse(raw);
   member.points = (member.points || 0) + amount;
+  // Session 18: separate running balance that ONLY POST
+  // /member/:id/redeem-points ever spends down. Kept apart from `points`
+  // on purpose — `points` drives the tier badge (Explorer, etc. — see
+  // getTier() in app.js) and should only ever go up, so redeeming Pro
+  // time can never visibly demote someone's badge. Starts at 0 for every
+  // member regardless of their existing `points` total: this is a new
+  // feature as of Session 18, not a retroactive cash-out of points
+  // already earned before redemption existed.
+  member.proPoints = (member.proPoints || 0) + amount;
   await env.CURVES_KV.put(`member:${email}`, JSON.stringify(member));
 }
 
@@ -165,6 +252,119 @@ async function awardPoints(env, email, amount, reason, meta = {}) {
 // and ready the moment /tgm/guides routes get built.
 function tgmGenerationReward(spannerRating) { return 100 + 40 * spannerRating; }
 function tgmDebriefReward(spannerRating) { return 20 + 10 * spannerRating; }
+
+// ── STRIPE / PRO MEMBERSHIP — Session 18 ─────────────────────────────────
+// Pro lives directly on the member record — no redeemable token, no
+// "which device/tab has it" failure mode. Pricing mirrors Cult
+// Connections' tier shape. Gates: Trip Postcards, Logbook, TGM (not live
+// yet), Add Roads are Pro-only; Garage stays free but capped at 1 vehicle.
+const PIT_PASS_DAYS_SERVER = 7; // mirrors app.js's PIT_PASS_DAYS — keep in sync
+const PIT_PASS_DAYS_MS = PIT_PASS_DAYS_SERVER * 24 * 60 * 60 * 1000;
+
+// Deliberately no lifetime tier on the public checkout — Scott wants
+// Chasin' Curves on a longer-term-subscription-shaped model given the
+// opt-in process, not a one-and-done. 12 months is priced to visibly
+// undercut buying two 6-month blocks ($19.99 vs $23.98) — the point is
+// to pull people toward the year, not to protect the 6-month tier's
+// per-period rate. ADMIN_PLANS adds a lifetime option back in, but only
+// for /admin/grant-pro comps (Scott himself, beta testers) — it was never
+// meant to be purchasable.
+const PRO_PLANS = {
+  month1:  { label: '1 Month',   amount: 299,  days: 30 },
+  month6:  { label: '6 Months',  amount: 1199, days: 180 },
+  month12: { label: '12 Months', amount: 1999, days: 365 },
+};
+const ADMIN_PLANS = { ...PRO_PLANS, lifetime: { label: 'Lifetime (comp)', amount: 0, days: null } };
+
+// Points → free Pro redemption. Scott's working number, deliberately not
+// publicised anywhere yet (no promo in the checkout modal, no push copy —
+// just a plain line in the Points tab) until real accrual rates validate
+// it: "a healthy average contribution" (1 vehicle + ~5 photos + 3-4 roads)
+// works out to roughly 500 points, so 1000 = a solid target, not a
+// trivial one. Spends from member.proPoints, never member.points — see
+// awardPoints() above for why those are tracked separately.
+const POINTS_PER_PRO_MONTH = 1000;
+const REDEEM_MONTH_DAYS = 30;
+
+function isMemberPro(member) {
+  if (!member) return false;
+  if (member.proLifetime) return true;
+  if (member.proExpiresAt && Date.now() < member.proExpiresAt) return true;
+  if (member.pitPassActivated) {
+    const activatedMs = new Date(member.pitPassActivated).getTime();
+    if (Number.isFinite(activatedMs) && Date.now() < activatedMs + PIT_PASS_DAYS_MS) return true;
+  }
+  return false;
+}
+
+async function stripeRequest(env, path, method, body) {
+  const res = await fetch(`https://api.stripe.com/v1${path}`, {
+    method,
+    headers: {
+      'Authorization': `Bearer ${env.STRIPE_SECRET_KEY}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: body ? new URLSearchParams(body).toString() : undefined,
+  });
+  return res.json();
+}
+
+async function verifyStripeSignature(payload, sigHeader, secret) {
+  const parts = sigHeader.split(',').reduce((acc, part) => {
+    const [k, v] = part.split('=');
+    acc[k] = v;
+    return acc;
+  }, {});
+  const timestamp = parts['t'];
+  const sig = parts['v1'];
+  if (!timestamp || !sig) return false;
+
+  const signedPayload = `${timestamp}.${payload}`;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const computed = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signedPayload));
+  const computedHex = Array.from(new Uint8Array(computed)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+  if (computedHex.length !== sig.length) return false;
+  let diff = 0;
+  for (let i = 0; i < computedHex.length; i++) diff |= computedHex.charCodeAt(i) ^ sig.charCodeAt(i);
+  return diff === 0;
+}
+
+// Applies a completed Stripe purchase to a member's account. Idempotent via
+// proAppliedSessions — safe to call twice for the same Stripe session (both
+// the webhook and the /checkout-status self-heal path call this; whichever
+// lands first wins, the second is a no-op). A day-based plan stacks onto any
+// still-active expiry instead of resetting it, so buying more time before
+// the old block runs out never wastes what's left.
+async function grantPro(env, email, planId, plan, stripeSessionId) {
+  const raw = await env.CURVES_KV.get(`member:${email}`);
+  if (!raw) return false; // shouldn't happen — checkout requires an existing session/member
+
+  const member = JSON.parse(raw);
+  member.proAppliedSessions = member.proAppliedSessions || [];
+  if (member.proAppliedSessions.includes(stripeSessionId)) return true;
+
+  if (plan.days === null) {
+    member.proLifetime = true;
+    member.proExpiresAt = null;
+  } else {
+    const base = (member.proExpiresAt && member.proExpiresAt > Date.now()) ? member.proExpiresAt : Date.now();
+    member.proExpiresAt = base + plan.days * 24 * 60 * 60 * 1000;
+  }
+  member.proTier = planId;
+  member.proPurchasedAt = Date.now();
+  member.proAppliedSessions.push(stripeSessionId);
+  if (member.proAppliedSessions.length > 20) member.proAppliedSessions = member.proAppliedSessions.slice(-20);
+
+  await env.CURVES_KV.put(`member:${email}`, JSON.stringify(member));
+  return true;
+}
 
 // ── RESEND EMAIL — verification code ────────────────────────────────────────
 async function sendCodeEmail(resendKey, toEmail, code) {
@@ -301,6 +501,13 @@ export default {
         const authedEmail = await getAuthedEmail(request, env);
         if (!authedEmail) return err('Not authenticated', 401);
 
+        // Session 18 correction: Add Roads is deliberately NOT Pro-gated —
+        // it was briefly built that way this session, then corrected once
+        // Scott confirmed the actual intent behind the points system: free
+        // users earning points (add_road pays 100) is meant to be a path
+        // toward free Pro months, so gating the exact action that earns
+        // the most points would have worked against that. See handoff.md
+        // for the still-unbuilt points-redemption mechanic this implies.
         const body = await request.json();
         const road = { ...body, addedBy: authedEmail }; // override — never trust client value
         const roads = JSON.parse(await env.CURVES_KV.get('roads') || '[]');
@@ -369,6 +576,83 @@ export default {
         await env.CURVES_KV.put(`member:${id}`, JSON.stringify({ ...existing, ...safeBody, id }));
         return json({ ok: true });
       }
+    }
+
+    // ── Pit Pass activation — Session 18. Was a raw PUT /member field the
+    // client set itself (no server check at all); now server-validated
+    // against the same 6 requirements app.js's PitPassBanner checks
+    // client-side, since pitPassActivated grants real Pro access now. ─────
+    const pitPassActivateMatch = path.match(/^\/member\/([^/]+)\/activate-pit-pass$/);
+    if (pitPassActivateMatch && method === 'POST') {
+      const id = cleanEmail(pitPassActivateMatch[1]);
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+      if (authedEmail !== id) return err('Forbidden', 403);
+
+      const raw = await env.CURVES_KV.get(`member:${id}`);
+      if (!raw) return err('Member not found', 404);
+      const member = JSON.parse(raw);
+      if (member.pitPassActivated) return json({ ok: true, alreadyActivated: true, pitPassActivated: member.pitPassActivated });
+
+      const garage = parseGarage(await env.CURVES_KV.get(`garage:${id}`));
+      if (!checkPitPassServer(member, garage)) {
+        return err('Profile requirements not met yet', 400);
+      }
+
+      member.pitPassActivated = new Date().toISOString();
+      await env.CURVES_KV.put(`member:${id}`, JSON.stringify(member));
+      return json({ ok: true, pitPassActivated: member.pitPassActivated });
+    }
+
+    // ── Points → Pro redemption — Session 18 ────────────────────────────
+    // Redeems ALL currently-eligible whole 1000-point blocks in one call
+    // (floor(proPoints / 1000) months) rather than one month per click —
+    // simpler than tracking a partial-redemption state, and it's what a
+    // member holding e.g. 2400 points almost certainly wants anyway.
+    const redeemPointsMatch = path.match(/^\/member\/([^/]+)\/redeem-points$/);
+    if (redeemPointsMatch && method === 'POST') {
+      const id = cleanEmail(redeemPointsMatch[1]);
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+      if (authedEmail !== id) return err('Forbidden', 403);
+
+      const raw = await env.CURVES_KV.get(`member:${id}`);
+      if (!raw) return err('Member not found', 404);
+      const member = JSON.parse(raw);
+
+      if (member.proLifetime) {
+        return err("You already have lifetime Pro — no need to redeem points.", 400);
+      }
+
+      const available = member.proPoints || 0;
+      const monthsToGrant = Math.floor(available / POINTS_PER_PRO_MONTH);
+      if (monthsToGrant < 1) {
+        return err(`Not enough points yet — you have ${available}, need ${POINTS_PER_PRO_MONTH} per free month`, 400);
+      }
+
+      const pointsSpent = monthsToGrant * POINTS_PER_PRO_MONTH;
+      const daysGranted = monthsToGrant * REDEEM_MONTH_DAYS;
+
+      member.proPoints = available - pointsSpent;
+      const base = (member.proExpiresAt && member.proExpiresAt > Date.now()) ? member.proExpiresAt : Date.now();
+      member.proExpiresAt = base + daysGranted * 24 * 60 * 60 * 1000;
+      member.proTier = member.proTier || 'redeemed';
+
+      // Mirrors awardPoints()'s ledger, as a negative entry, so Recent
+      // Activity in the Points tab shows the spend, not just silent decay.
+      const ledgerKey = `points_ledger:${id}`;
+      const ledger = JSON.parse(await env.CURVES_KV.get(ledgerKey) || '[]');
+      ledger.push({ amount: -pointsSpent, reason: 'redeem_pro', meta: { monthsGranted: monthsToGrant }, timestamp: Date.now() });
+      await env.CURVES_KV.put(ledgerKey, JSON.stringify(ledger));
+
+      await env.CURVES_KV.put(`member:${id}`, JSON.stringify(member));
+      return json({
+        ok: true,
+        monthsGranted: monthsToGrant,
+        pointsSpent,
+        proPointsRemaining: member.proPoints,
+        proExpiresAt: member.proExpiresAt,
+      });
     }
 
     // ── Member public profile — any authed member may view, never exposes
@@ -557,6 +841,17 @@ export default {
         const oldIds = new Set(oldGarage.map(v => v.id));
         const newlyAdded = garage.filter(v => !oldIds.has(v.id));
 
+        // Session 18: free plan is capped at 1 vehicle. Only blocks adding
+        // a NEW vehicle beyond the cap — a Pro member whose access lapses
+        // keeps whatever they already saved and can still edit/reorder it,
+        // they just can't grow past the cap while free.
+        if (newlyAdded.length > 0 && garage.length > 1) {
+          const memberForGarage = JSON.parse(await env.CURVES_KV.get(`member:${id}`) || 'null');
+          if (!isMemberPro(memberForGarage)) {
+            return err('Free plan is limited to 1 vehicle in the Garage — upgrade to Pro to add more', 402);
+          }
+        }
+
         await env.CURVES_KV.put(`garage:${id}`, serialised);
 
         for (const vehicle of newlyAdded) {
@@ -597,6 +892,12 @@ export default {
       const authedEmail = await getAuthedEmail(request, env);
       if (!authedEmail) return err('Not authenticated', 401);
       if (authedEmail !== userId) return err('Forbidden', 403);
+
+      // Session 18: Logbook (incl. this settle-up write) is Pro-only.
+      const memberForLogbookPut = JSON.parse(await env.CURVES_KV.get(`member:${userId}`) || 'null');
+      if (!isMemberPro(memberForLogbookPut)) {
+        return err('Logbook is a Pro feature — upgrade to keep logging trips', 402);
+      }
 
       const body = await request.json();
       const hasOdo = typeof body.odometerEnd === 'number';
@@ -645,6 +946,13 @@ export default {
       const authedEmail = await getAuthedEmail(request, env);
       if (!authedEmail) return err('Not authenticated', 401);
       if (authedEmail !== id) return err('Forbidden', 403);
+
+      // Session 18: Logbook is Pro-only (also covers Trip Postcards, which
+      // are generated from logged trips — no separate endpoint to gate).
+      const memberForLogbook = JSON.parse(await env.CURVES_KV.get(`member:${id}`) || 'null');
+      if (!isMemberPro(memberForLogbook)) {
+        return err('Logbook is a Pro feature — upgrade to start logging trips', 402);
+      }
 
       if (method === 'GET') {
         const val = await env.CURVES_KV.get(`logbook:${id}`);
@@ -754,6 +1062,120 @@ export default {
       await env.CURVES_KV.put('alerts', JSON.stringify(alerts));
       await awardPoints(env, authedEmail, POINT_ACTIONS.report_alert, 'report_alert', { roadId: alert.roadId });
       return json({ ok: true, alert });
+    }
+
+    // ── Stripe checkout — Session 18 ─────────────────────────────────────
+    if (path === '/create-checkout' && method === 'POST') {
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+
+      const body = await request.json();
+      const plan = PRO_PLANS[body.planId];
+      if (!plan) return err('Invalid plan');
+      if (!body.successUrl || !body.cancelUrl) return err('successUrl and cancelUrl required');
+
+      try {
+        const session = await stripeRequest(env, '/checkout/sessions', 'POST', {
+          'payment_method_types[]': 'card',
+          'mode': 'payment',
+          'customer_email': authedEmail,
+          'line_items[0][price_data][currency]': 'usd',
+          'line_items[0][price_data][product_data][name]': `Chasin' Curves Pro — ${plan.label}`,
+          'line_items[0][price_data][product_data][description]': "Trip Postcards, Logbook & TGM. One-time payment, no auto-renewal.",
+          'line_items[0][price_data][unit_amount]': plan.amount.toString(),
+          'line_items[0][quantity]': '1',
+          'metadata[email]': authedEmail,
+          'metadata[planId]': body.planId,
+          'metadata[days]': plan.days === null ? 'lifetime' : plan.days.toString(),
+          'success_url': body.successUrl,
+          'cancel_url': body.cancelUrl,
+        });
+        if (session.error) return err(session.error.message || 'Stripe error creating checkout session', 502);
+        return json({ url: session.url, sessionId: session.id });
+      } catch (e) {
+        return err(e.message, 500);
+      }
+    }
+
+    // ── Stripe webhook ────────────────────────────────────────────────────
+    if (path === '/webhook' && method === 'POST') {
+      try {
+        const rawBody = await request.text();
+        const sigHeader = request.headers.get('stripe-signature') || '';
+        const valid = await verifyStripeSignature(rawBody, sigHeader, env.STRIPE_WEBHOOK_SECRET);
+        if (!valid) return new Response('Invalid signature', { status: 400 });
+
+        const event = JSON.parse(rawBody);
+        if (event.type === 'checkout.session.completed') {
+          const session = event.data.object;
+          const email = cleanEmail(session.metadata?.email || session.customer_details?.email || '');
+          const planId = session.metadata?.planId;
+          const plan = PRO_PLANS[planId];
+          if (email && plan) {
+            await grantPro(env, email, planId, plan, session.id);
+          }
+        }
+        return json({ received: true });
+      } catch (e) {
+        return err(e.message, 500);
+      }
+    }
+
+    // ── Checkout status / self-heal — Session 18. Covers the case the
+    // webhook hasn't landed yet by the time the user is redirected back:
+    // the exact failure mode found in Cult Connections' original checkout
+    // (token only ever deliverable via the same browser tab). Safe to call
+    // repeatedly — grantPro() is idempotent per Stripe session id. app.js
+    // calls this on return from Checkout using the session_id Stripe
+    // appends to success_url. ────────────────────────────────────────────
+    if (path === '/checkout-status' && method === 'GET') {
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+
+      const sessionId = url.searchParams.get('session_id');
+      if (!sessionId) return err('session_id required');
+
+      try {
+        const session = await stripeRequest(env, `/checkout/sessions/${sessionId}`, 'GET');
+        if (session.error) return err(session.error.message || 'Stripe error', 502);
+        if (session.payment_status !== 'paid') return json({ granted: false, status: session.payment_status });
+
+        const sessionEmail = cleanEmail(session.metadata?.email || session.customer_details?.email || '');
+        if (sessionEmail !== authedEmail) return err('Session does not belong to this account', 403);
+
+        const planId = session.metadata?.planId;
+        const plan = PRO_PLANS[planId];
+        if (!plan) return err('Unknown plan on session', 500);
+
+        await grantPro(env, authedEmail, planId, plan, session.id);
+
+        const raw = await env.CURVES_KV.get(`member:${authedEmail}`);
+        const member = JSON.parse(raw || '{}');
+        return json({
+          granted: true,
+          pro: { lifetime: !!member.proLifetime, expiresAt: member.proExpiresAt || null, tier: member.proTier || null },
+        });
+      } catch (e) {
+        return err(e.message, 500);
+      }
+    }
+
+    // ── Admin — comp Pro access, same pattern as Mic Drop/Cult Connections'
+    // admin-grant endpoints. ──────────────────────────────────────────────
+    if (path === '/admin/grant-pro' && method === 'POST') {
+      const body = await request.json();
+      if (!env.CURVES_ADMIN_KEY || body.adminKey !== env.CURVES_ADMIN_KEY) {
+        return err('Unauthorised', 403);
+      }
+      const email = cleanEmail(body.email);
+      if (!isValidEmail(email)) return err('Valid email required');
+      const planId = body.planId || 'lifetime';
+      const plan = ADMIN_PLANS[planId];
+      if (!plan) return err('Invalid plan');
+
+      const ok = await grantPro(env, email, planId, plan, `comp_${Date.now()}`);
+      if (!ok) return err('Member not found — they need to sign up first', 404);
+      return json({ ok: true });
     }
 
     return err('Not found', 404);
