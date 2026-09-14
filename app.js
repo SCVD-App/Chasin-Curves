@@ -3212,6 +3212,24 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
     }
   };
 
+  // Session 20: shares the public /run/:id invite link (worker.js — no
+  // auth wall, server-rendered with Open Graph tags for a proper Facebook/
+  // Instagram preview). Same share-then-clipboard-fallback shape as
+  // LiveTripView's handleShare above, for consistency.
+  const shareTrip = async (trip) => {
+    const url = `${API}/run/${trip.id}`;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: `${trip.title} — Chasin' Curves`, url });
+      } else if (navigator.clipboard) {
+        await navigator.clipboard.writeText(url);
+        alert("Invite link copied — paste it wherever you like.");
+      }
+    } catch (e) {
+      if (e?.name !== "AbortError") alert("Couldn't share — try again.");
+    }
+  };
+
   return (
     <div style={{ padding: 20 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
@@ -3266,10 +3284,13 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
               </div>
             )}
             {trip.notes && <div style={{ fontSize: 12, color: C.dim, marginBottom: 10, fontStyle: "italic" }}>{trip.notes}</div>}
-            {!isJoined && trip.createdBy !== currentUser.id && (
-              <Btn size="sm" variant="blue" onClick={() => joinTrip(trip.id)}>Join this Run</Btn>
-            )}
-            {isJoined && <Badge color={C.blue}>✓ You're in</Badge>}
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {!isJoined && trip.createdBy !== currentUser.id && (
+                <Btn size="sm" variant="blue" onClick={() => joinTrip(trip.id)}>Join this Run</Btn>
+              )}
+              {isJoined && <Badge color={C.blue}>✓ You're in</Badge>}
+              <Btn size="sm" variant="ghost" onClick={() => shareTrip(trip)}>📤 Share</Btn>
+            </div>
           </div>
         );
       })}
