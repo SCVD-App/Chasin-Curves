@@ -3168,13 +3168,16 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onRefre
 // ─── TRIP PLANNER ─────────────────────────────────────────────
 const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) => {
   const [showNew, setShowNew] = useState(false);
-  const [form, setForm] = useState({ title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "" });
+  const [form, setForm] = useState({ title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "", waypoints: [] });
+  const [waypointInput, setWaypointInput] = useState("");
+  const [geocoding, setGeocoding] = useState(false);
 
   const handleCreate = async () => {
     if (!form.title || form.selectedRoads.length === 0) return;
     const trip = {
       id: Date.now(), title: form.title, date: form.date, time: form.time,
       routes: form.selectedRoads, vehicleId: form.vehicleId, notes: form.notes,
+      waypoints: form.waypoints,
       createdBy: currentUser.id, attendees: [{ memberId: currentUser.id, vehicleId: form.vehicleId }],
       createdAt: new Date().toISOString(),
     };
@@ -3182,8 +3185,28 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
     // (worker.js Session 17) — the old onPointsEarned("plan_trip") call
     // that used to sit here was a straight double-award, removed.
     try { const res = await api.postTrip(trip); setTrips(prev => [...prev, res.trip || trip]); await onRefreshPoints?.(); } catch { setTrips(prev => [...prev, trip]); }
-    setForm({ title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "" });
+    setForm({ title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "", waypoints: [] });
     setShowNew(false);
+  };
+
+  // Session 20: geocodes a typed place name (BP Landsborough, Witta, Aussie
+  // World...) via the same Mapbox forward-geocode helper the privacy fence
+  // uses, and appends it as the next stop. Order matters — first added is
+  // the meeting point, last is the end point, everything between is a via
+  // point — used by worker.js's /run/:id route-map overlay.
+  const addWaypoint = async () => {
+    const query = waypointInput.trim();
+    if (!query) return;
+    setGeocoding(true);
+    const result = await geocodeAddress(query);
+    setGeocoding(false);
+    if (!result) { alert(`Couldn't find "${query}" — try a more specific place name.`); return; }
+    setForm(f => ({ ...f, waypoints: [...f.waypoints, { label: result.placeName || query, lat: result.lat, lng: result.lng }] }));
+    setWaypointInput("");
+  };
+
+  const removeWaypoint = (idx) => {
+    setForm(f => ({ ...f, waypoints: f.waypoints.filter((_, i) => i !== idx) }));
   };
 
   const toggleRoad = id => {
@@ -3326,7 +3349,29 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
               ))}
             </div>
           </div>
-          <Input label="Notes" value={form.notes} onChange={v => setForm(f=>({...f,notes:v}))} placeholder="Meeting point, pace notes, anything else..." multiline />
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>
+              Stops · first is the meeting point, last is where you'll finish up
+            </div>
+            {form.waypoints.map((wp, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: `1px solid ${C.border}` }}>
+                <span style={{ fontSize: 10, color: i === 0 ? C.blue : (i === form.waypoints.length - 1 ? C.red : C.champagne), width: 16 }}>
+                  {i === 0 ? "🏁" : (i === form.waypoints.length - 1 ? "🎯" : i)}
+                </span>
+                <span style={{ fontSize: 13, color: C.bone, flex: 1 }}>{wp.label}</span>
+                <span onClick={() => removeWaypoint(i)} style={{ cursor: "pointer", color: C.dim, fontSize: 13 }}>✕</span>
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <div style={{ flex: 1 }}>
+                <Input value={waypointInput} onChange={setWaypointInput} placeholder="BP Landsborough, Witta, Aussie World..." />
+              </div>
+              <Btn size="sm" variant="ghost" onClick={addWaypoint} disabled={geocoding || !waypointInput.trim()}>
+                {geocoding ? "..." : "+ Add"}
+              </Btn>
+            </div>
+          </div>
+          <Input label="Notes" value={form.notes} onChange={v => setForm(f=>({...f,notes:v}))} placeholder="Pace notes, anything else..." multiline />
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <Btn variant="ghost" onClick={() => setShowNew(false)} style={{ flex: 1 }}>Cancel</Btn>
             <Btn onClick={handleCreate} style={{ flex: 2 }}>Publish Run</Btn>
