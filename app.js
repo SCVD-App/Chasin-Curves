@@ -102,6 +102,10 @@ const api = {
   getTrips: () => fetch(`${API}/trips`).then(r => r.json()),
   postTrip: (trip) => authedFetch(`${API}/trips`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(trip) }),
   updateTrip: (id, updates) => authedFetch(`${API}/trips/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }),
+  // Session 19: dedicated RSVP call — hits worker.js's atomic POST /trips/:id/rsvp
+  // rather than updateTrip's whole-object PUT, so concurrent RSVPs from different
+  // members can never stomp each other.
+  rsvpTrip: (id, status, vehicleId) => authedFetch(`${API}/trips/${id}/rsvp`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ status, vehicleId }) }),
   postReview: (review) => authedFetch(`${API}/reviews`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(review) }),
   postAlert: (alert) => authedFetch(`${API}/alerts`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(alert) }),
 
@@ -3189,11 +3193,23 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
     }));
   };
 
+  // Session 19: this used to only update local React state — no server call
+  // at all, so a "joined" run reverted to unjoined on every reload. Now
+  // calls the atomic POST /trips/:id/rsvp and reconciles from the server's
+  // returned trip, same optimistic-then-fallback shape as handleCreate above.
   const joinTrip = async (tripId) => {
+    const vehicleId = currentUser.garage[0]?.id;
     setTrips(prev => prev.map(t => t.id === tripId
-      ? { ...t, attendees: [...(t.attendees||[]), { memberId: currentUser.id, vehicleId: currentUser.garage[0]?.id }] }
+      ? { ...t, attendees: [...(t.attendees||[]), { memberId: currentUser.id, vehicleId, status: "going" }] }
       : t
     ));
+    try {
+      const res = await api.rsvpTrip(tripId, "going", vehicleId);
+      if (res.trip) setTrips(prev => prev.map(t => t.id === tripId ? res.trip : t));
+    } catch {
+      // Optimistic update already applied above; a real failure here just
+      // means the next reload will show the true (un-joined) server state.
+    }
   };
 
   return (
