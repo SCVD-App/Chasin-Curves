@@ -4128,18 +4128,26 @@ const TOUR_SLIDES = [
     bg: () => (
       <div style={{ position:"absolute", inset:0, background:"#0a0a0a", display:"flex", flexDirection:"column", justifyContent:"center", gap:8, padding:"0 6%" }}>
         {[
-          { code:"BZ", name:"2005 BMW Z4", spec:"E85 3.0i · Imola Red", color:C.red },
-          { code:"JX", name:"2004 Jaguar X350", spec:"3.5l V8 · Champagne", color:C.champagne, primary:true },
-          { code:"TT", name:"2014 Triumph Thunderbird Storm", spec:"1700cc · Marble Grey", color:C.blue },
-          { code:"M3", name:"1993 Mustang 3200 Widebody", spec:"Twin 5.7l MerCruiser V8's · White", color:C.blue },
+          { code:"BZ", name:"2005 BMW Z4", spec:"E85 3.0i · Imola Red", color:C.red, photo:SCOTT_Z4_PHOTO },
+          { code:"JX", name:"2004 Jaguar X350", spec:"3.5l V8 · Champagne", color:C.champagne, primary:true, photo:null },
+          { code:"TT", name:"2014 Triumph Thunderbird Storm", spec:"1700cc · Marble Grey", color:C.blue, photo:null },
+          { code:"M3", name:"1993 Mustang 3200 Widebody", spec:"Twin 5.7l MerCruiser V8's · White", color:C.blue, photo:null },
         ].map(v => (
-          <div key={v.code} style={{ display:"flex", alignItems:"center", gap:12, padding:"10px 12px", borderRadius:8, border:`1px solid ${v.primary ? C.champagne : C.border}`, background:"#111" }}>
-            <div style={{ width:34, height:34, borderRadius:"50%", border:`1px solid ${v.color}`, color:v.color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, flexShrink:0 }}>{v.code}</div>
-            <div style={{ flex:1, minWidth:0 }}>
+          <div key={v.code} style={{ position:"relative", display:"flex", alignItems:"center", gap:12, padding:"10px 12px", borderRadius:8, border:`1px solid ${v.primary ? C.champagne : C.border}`, overflow:"hidden", minHeight:56 }}>
+            {/* Session 28: photo-backed rows, matching the real Garage
+                screen's own card treatment (dark image, low brightness,
+                content overlaid) — only vehicles with a real hosted photo
+                get one; the rest stay plain flat rows rather than faking
+                imagery that doesn't exist yet. */}
+            {v.photo
+              ? <img src={v.photo} alt="" style={{ position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", filter:"brightness(0.3)" }} />
+              : <div style={{ position:"absolute", inset:0, background:"#111" }} />}
+            <div style={{ width:34, height:34, borderRadius:"50%", border:`1px solid ${v.color}`, color:v.color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, flexShrink:0, position:"relative", background:"rgba(0,0,0,0.4)" }}>{v.code}</div>
+            <div style={{ flex:1, minWidth:0, position:"relative" }}>
               <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:14, fontWeight:600, color:C.bone, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{v.name}</div>
               <div style={{ fontSize:10, color:C.muted }}>{v.spec}</div>
             </div>
-            {v.primary && <span style={{ fontSize:9, padding:"2px 7px", borderRadius:10, background:C.champagneDim, color:C.champagne, flexShrink:0 }}>★ Primary</span>}
+            {v.primary && <span style={{ fontSize:9, padding:"2px 7px", borderRadius:10, background:C.champagneDim, color:C.champagne, flexShrink:0, position:"relative" }}>★ Primary</span>}
           </div>
         ))}
       </div>
