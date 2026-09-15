@@ -4115,6 +4115,12 @@ const SCOTT_GUITAR_PHOTO_3 = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.de
 // Session 25: Scott's own real trip postcard (Beerwah ↔ Mount Mellum,
 // 10km, 2004 Jaguar X350) — replaces the gradient-only placeholder below.
 const SCOTT_JAG_POSTCARD = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/emblen_scott_gmail_com_v1781787551054_1789440765319.jpg";
+// Session 28: real Garage photos for the remaining vehicle rows in the
+// "Your Garage" tour slide — completes what was a partial (Z4-only) fix.
+const SCOTT_JAGUAR_PHOTO = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/scott_cc_v1781787551054_1781787606155.jpg";
+const SCOTT_TRIUMPH_PHOTO = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/scott_cc_v1781787739483_1781790126045.jpg";
+const SCOTT_MUSTANG_PHOTO = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/scott_cc_v1781788119651_1781788455137.jpg";
+const SCOTT_LANDCRUISER_PHOTO = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/scott_cc_v1781787929689_1781790031237.jpg";
 
 const TOUR_SLIDES = [
   {
@@ -4129,9 +4135,11 @@ const TOUR_SLIDES = [
       <div style={{ position:"absolute", inset:0, background:"#0a0a0a", display:"flex", flexDirection:"column", justifyContent:"center", gap:8, padding:"0 6%" }}>
         {[
           { code:"BZ", name:"2005 BMW Z4", spec:"E85 3.0i · Imola Red", color:C.red, photo:SCOTT_Z4_PHOTO },
-          { code:"JX", name:"2004 Jaguar X350", spec:"3.5l V8 · Champagne", color:C.champagne, primary:true, photo:null },
-          { code:"TT", name:"2014 Triumph Thunderbird Storm", spec:"1700cc · Marble Grey", color:C.blue, photo:null },
-          { code:"M3", name:"1993 Mustang 3200 Widebody", spec:"Twin 5.7l MerCruiser V8's · White", color:C.blue, photo:null },
+          { code:"JX", name:"2004 Jaguar X350", spec:"3.5l V8 · Champagne", color:C.champagne, primary:true, photo:SCOTT_JAGUAR_PHOTO },
+          { code:"TT", name:"2014 Triumph Thunderbird Storm", spec:"1700cc · Marble Grey", color:C.blue, photo:SCOTT_TRIUMPH_PHOTO },
+          { code:"TL", name:"2016 Toyota LandCruiser 200 Series", spec:"4.5l V8 Twin Turbo Diesel · Black", color:C.blue, photo:SCOTT_LANDCRUISER_PHOTO },
+          { code:"M3", name:"1993 Mustang 3200 Widebody", spec:"Twin 5.7l MerCruiser V8's · White", color:C.blue, photo:SCOTT_MUSTANG_PHOTO },
+          { code:"MT", name:"1986 My Guitars Tele's and Strat's", spec:"Telecaster, Stratocaster, Custom Build · Multiple", color:C.blue, photo:SCOTT_GUITAR_PHOTO_3 },
         ].map(v => (
           <div key={v.code} style={{ position:"relative", display:"flex", alignItems:"center", gap:12, padding:"10px 12px", borderRadius:8, border:`1px solid ${v.primary ? C.champagne : C.border}`, overflow:"hidden", minHeight:56 }}>
             {/* Session 28: photo-backed rows, matching the real Garage
