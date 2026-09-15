@@ -2386,13 +2386,23 @@ const drawTripInviteCard = async ({ title, dateLabel, timeLabel, waypoints, vehi
 
     ctx.textAlign = "left";
     ctx.font = "600 24px 'Josefin Sans'";
+    // Session 29 fix: suppress a waypoint's LABEL TEXT (not its dot) once
+    // it falls inside the trip-info title zone reserved lower on the card.
+    // A fixed downward shift of the title block (the first attempt at this
+    // fix) only worked for THIS trip's specific waypoint layout — a
+    // different run's waypoints could land anywhere, so the real fix is
+    // making the title zone off-limits to labels generally, not guessing
+    // better fixed coordinates. titleZoneTop mirrors the same
+    // photoOrMapDrawn logic midY uses below, computed early since layering
+    // order means labels get drawn before that section runs.
+    const titleZoneTop = (mapDrawn || !!heroImg) ? 1160 - 100 : 680 - 100;
     waypoints.forEach((w, i) => {
       const [x, y] = pts[i];
       ctx.fillStyle = i === 0 ? C.champagne : (i === waypoints.length - 1 ? C.red : C.bone);
       ctx.beginPath();
       ctx.arc(x, y, 7, 0, Math.PI * 2);
       ctx.fill();
-      shadowText(w.label, x + 16, y + 8);
+      if (y < titleZoneTop) shadowText(w.label, x + 16, y + 8);
     });
     ctx.textAlign = "center";
   }
