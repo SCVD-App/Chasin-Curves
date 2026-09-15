@@ -4118,13 +4118,33 @@ const SCOTT_JAG_POSTCARD = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/
 
 const TOUR_SLIDES = [
   {
+    // Session 27: rebuilt as a multi-vehicle list (was a single-vehicle
+    // hero card) — per Scott's call, showing the real breadth of a garage
+    // (six real vehicles: cars, a bike, a boat, guitars) gives a much
+    // clearer sense of what a paid tier actually unlocks than one car.
     meta: "Your Garage",
-    pan: "panLR",
-    photoUrl: SCOTT_Z4_PHOTO,
-    bg: () => <div style={{ position:"absolute", inset:0, background:"linear-gradient(135deg, #2a1810, #0d0d0d 60%)" }}>
-      <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at 30% 40%, rgba(192,57,43,0.25), transparent 60%)" }} />
-    </div>,
-    caption: { title: "2005 BMW Z4", subtitle: "E85 3.0i Roadster · Imola Red", badge: "★ Primary" },
+    fit: true,
+    photoUrl: null,
+    bg: () => (
+      <div style={{ position:"absolute", inset:0, background:"#0a0a0a", display:"flex", flexDirection:"column", justifyContent:"center", gap:8, padding:"0 6%" }}>
+        {[
+          { code:"BZ", name:"2005 BMW Z4", spec:"E85 3.0i · Imola Red", color:C.red },
+          { code:"JX", name:"2004 Jaguar X350", spec:"3.5l V8 · Champagne", color:C.champagne, primary:true },
+          { code:"TT", name:"2014 Triumph Thunderbird Storm", spec:"1700cc · Marble Grey", color:C.blue },
+          { code:"M3", name:"1993 Mustang 3200 Widebody", spec:"Twin 5.7l MerCruiser V8's · White", color:C.blue },
+        ].map(v => (
+          <div key={v.code} style={{ display:"flex", alignItems:"center", gap:12, padding:"10px 12px", borderRadius:8, border:`1px solid ${v.primary ? C.champagne : C.border}`, background:"#111" }}>
+            <div style={{ width:34, height:34, borderRadius:"50%", border:`1px solid ${v.color}`, color:v.color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, flexShrink:0 }}>{v.code}</div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:14, fontWeight:600, color:C.bone, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{v.name}</div>
+              <div style={{ fontSize:10, color:C.muted }}>{v.spec}</div>
+            </div>
+            {v.primary && <span style={{ fontSize:9, padding:"2px 7px", borderRadius:10, background:C.champagneDim, color:C.champagne, flexShrink:0 }}>★ Primary</span>}
+          </div>
+        ))}
+      </div>
+    ),
+    caption: null,
   },
   {
     meta: "Your Music, Too",
@@ -4134,12 +4154,11 @@ const TOUR_SLIDES = [
     caption: { title: "1986 My Guitars Tele's and Strat's", subtitle: "Telecaster, Stratocaster, Custom Build · Multiple", eyebrow: "🎸 Riffs" },
   },
   {
-    // Session 26: `fit:true` — this is a fully-composed poster where every
-    // edge matters (title, stats, route all baked in). The panLR/panRL/etc
-    // treatment below oversizes content by ~30% (inset:-8% stacked with
-    // scale(1.12)) specifically so a photographic background can be
-    // "scanned" without ever showing a hard edge — wrong for something
-    // that's meant to be seen in full. `fit` slides skip that entirely.
+    // `fit:true` — this is a fully-composed poster where every edge matters
+    // (title, stats, route all baked in). The pan treatment elsewhere
+    // oversizes content by ~30% specifically so a photographic background
+    // can be "scanned" without ever showing a hard edge — wrong for
+    // something meant to be seen in full.
     meta: "Trip Postcards",
     fit: true,
     photoUrl: SCOTT_JAG_POSTCARD,
@@ -4147,75 +4166,100 @@ const TOUR_SLIDES = [
     caption: null, // the postcard already has its own title/stats/route baked in — no need to double up
   },
   {
-    meta: "Trip Invites",
-    pan: "panBT",
-    photoUrl: SCOTT_Z4_PHOTO,
-    bg: () => <div style={{ position:"absolute", inset:0, background:"linear-gradient(160deg, #151515, #0a0a0a)" }} />,
-    caption: { title: "Kenilworth Donuts Run", subtitle: "Friday · 0930 · 1 going", badge: "Confirmed", badgeColor: C.blue },
-    // Session 26: replicates the real /run/:id waypoint treatment (dotted
-    // line + bold place-name labels bleeding through a faded map over the
-    // vehicle photo) in miniature — the tour previously just showed a
-    // plain caption here with none of that, per Scott's screenshot of the
-    // actual feature. Stationary (not part of the pannable layer) so
-    // labels never get swept off-frame the way the caption bug did before.
-    routeOverlay: {
-      points: "18,15 42,35 30,55 58,72",
-      labels: [
-        { text: "Kenilworth", x: 18, y: 15 },
-        { text: "Witta", x: 42, y: 35 },
-        { text: "Landsborough", x: 58, y: 72 },
-      ],
-    },
-  },
-  {
-    meta: "Plan a Run",
+    // Session 27: rebuilt to mirror the REAL Trips & Runs list screen —
+    // was two separate fabricated slides (a single invite card, and an
+    // empty form mockup with invented road names). Merged into one,
+    // matching Scott's actual screenshot: the header, the bold "+ Plan a
+    // Run" button new visitors would step into when ready, and one real
+    // trip card underneath (Kenilworth Donuts Run) with its actual roads
+    // and notes.
+    meta: "Trips & Runs",
     fit: true,
     photoUrl: null,
     bg: () => (
-      <div style={{ position:"absolute", inset:0, background:"#0d0d0d", display:"flex", flexDirection:"column", justifyContent:"center", padding:"0 8%" }}>
-        <div style={{ fontSize:12, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:8 }}>Run Name</div>
-        <div style={{ height:40, border:`1px solid ${C.border}`, borderRadius:8, marginBottom:24 }} />
-        <div style={{ fontSize:12, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:8 }}>Select Roads</div>
-        <div style={{ display:"flex", gap:8, marginBottom:28, flexWrap:"wrap" }}>
-          <span style={{ fontSize:12, padding:"7px 14px", borderRadius:16, border:`1px solid ${C.champagne}`, color:C.champagne }}>✓ Kenilworth Rd</span>
-          <span style={{ fontSize:12, padding:"7px 14px", borderRadius:16, border:`1px solid ${C.border}`, color:C.dim }}>Peachester Rd</span>
+      <div style={{ position:"absolute", inset:0, background:"#0a0a0a", padding:"6% 6% 0" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:18 }}>
+          <div>
+            <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:18, color:C.champagne }}>Trips & Runs</div>
+            <div style={{ fontSize:10, color:C.dim }}>See who's heading out. Join the convoy.</div>
+          </div>
+          <span style={{ fontSize:11, fontWeight:700, padding:"7px 14px", borderRadius:8, background:`linear-gradient(135deg, ${C.champagne}, ${C.champagneLight})`, color:C.midnight }}>+ PLAN A RUN</span>
         </div>
-        <div style={{ height:44, borderRadius:10, background:`linear-gradient(135deg, ${C.champagne}, ${C.champagneLight})`, opacity:0.85 }} />
+        <div style={{ border:`1px solid ${C.border}`, borderRadius:10, padding:14 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+            <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, fontWeight:600, color:C.bone }}>Kenilworth Donuts Run</div>
+            <div style={{ fontSize:10, color:C.dim }}>1 going</div>
+          </div>
+          <div style={{ fontSize:10, color:C.dim, marginBottom:8 }}>18 Sept 2026 · 09:30</div>
+          <div style={{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
+            <span style={{ fontSize:9, padding:"3px 9px", borderRadius:12, background:"#1a1608", color:C.champagne }}>Kenilworth-Maleny Road</span>
+            <span style={{ fontSize:9, padding:"3px 9px", borderRadius:12, background:"#1a1608", color:C.champagne }}>Peachester Road</span>
+          </div>
+          <div style={{ fontSize:10, color:C.dim, fontStyle:"italic", marginBottom:12 }}>Coffee, curves, donuts and more coffee...</div>
+          <div style={{ display:"flex", gap:8 }}>
+            <span style={{ fontSize:10, padding:"5px 12px", borderRadius:6, border:`1px solid ${C.blue}`, color:C.blue }}>✓ YOU'RE IN</span>
+            <span style={{ fontSize:10, padding:"5px 12px", borderRadius:6, border:`1px solid ${C.border}`, color:C.dim }}>📤 SHARE</span>
+          </div>
+        </div>
       </div>
     ),
     caption: null,
   },
   {
+    // Session 27: real vehicles + realistic odometer entries and points,
+    // matching the actual Logbook screen's structure — was generic
+    // invented dates/distances before.
     meta: "GPS Logbook",
     fit: true,
     photoUrl: null,
     bg: () => (
-      <div style={{ position:"absolute", inset:0, background:"#0d0d0d", display:"flex", flexDirection:"column", justifyContent:"center", padding:"0 8%" }}>
-        {[["Sat 12 Sept", "84km"], ["Sun 13 Sept", "142km"], ["Wed 16 Sept", "61km"]].map(([d, k]) => (
-          <div key={d} style={{ display:"flex", justifyContent:"space-between", padding:"16px 0", borderBottom:`1px solid ${C.border}` }}>
-            <span style={{ fontSize:15, color:C.bone }}>{d}</span>
-            <span style={{ fontSize:15, color:C.champagne }}>{k}</span>
+      <div style={{ position:"absolute", inset:0, background:"#0a0a0a", padding:"6%" }}>
+        <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:18, color:C.champagne, marginBottom:2 }}>Logbook</div>
+        <div style={{ fontSize:10, color:C.dim, marginBottom:18 }}>Same-day entries only — timestamp is captured automatically.</div>
+        {[
+          { v:"2004 Jaguar X350", d:"27 Aug 2026, 4:06 pm", o:"365046 → 365056", pts:"27 PTS" },
+          { v:"2004 Jaguar X350", d:"27 Aug 2026, 2:58 pm", o:"365036 → 365046", pts:"45 PTS" },
+          { v:"2005 BMW Z4", d:"25 Aug 2026, 4:22 pm", o:"135251 → 135258", pts:null },
+        ].map((e, i) => (
+          <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 0", borderTop: i > 0 ? `1px solid ${C.border}` : "none" }}>
+            <div>
+              <div style={{ fontSize:13, color:C.bone, marginBottom:2 }}>{e.v}</div>
+              <div style={{ fontSize:10, color:C.dim }}>{e.d} · Odo {e.o}</div>
+            </div>
+            {e.pts && <span style={{ fontSize:10, padding:"4px 9px", borderRadius:8, border:`1px solid ${C.champagne}`, color:C.champagne, flexShrink:0 }}>📍 {e.pts}</span>}
           </div>
         ))}
-        <div style={{ marginTop:18, fontSize:12, color:C.dim }}>Compliance-ready trail — logged automatically</div>
       </div>
     ),
     caption: null,
   },
   {
+    // Session 27: replaced with a real Roads LIST view (matching the
+    // actual screen) instead of an invented squiggly map illustration —
+    // per Scott's call, the list itself (real names, ratings, tags,
+    // distances) already gives new visitors the gist.
     meta: "Community Roads",
     fit: true,
     photoUrl: null,
     bg: () => (
-      <div style={{ position:"absolute", inset:0, background:"#0a0f12" }}>
-        <svg viewBox="0 0 340 220" preserveAspectRatio="xMidYMid slice" style={{ position:"absolute", inset:0, width:"100%", height:"100%" }}>
-          <path d="M-10,180 Q90,140 160,150 Q230,160 350,60" stroke={C.champagne} strokeWidth="2" fill="none" opacity="0.6"/>
-          <circle cx="90" cy="150" r="4" fill={C.red}/>
-          <circle cx="230" cy="90" r="4" fill={C.blue}/>
-        </svg>
+      <div style={{ position:"absolute", inset:0, background:"#0a0a0a", padding:"6%" }}>
+        <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:18, color:C.champagne, marginBottom:14 }}>Roads</div>
+        {[
+          { name:"Kenilworth–Maleny Road", region:"Sunshine Coast Hinterland · QLD", rating:"4.5 · 24 reviews", tags:["HINTERLAND","TWISTIES"] },
+          { name:"Bruxner Highway — Gibraltar Range", region:"Northern NSW Ranges · NSW", rating:"4.4 · 41 reviews", tags:["HIGHWAY","RAINFOREST"] },
+        ].map(r => (
+          <div key={r.name} style={{ marginBottom:16, paddingBottom:16, borderBottom:`1px solid ${C.border}` }}>
+            <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:15, fontWeight:600, color:C.bone }}>{r.name}</div>
+            <div style={{ fontSize:10, color:C.dim, marginBottom:4 }}>{r.region}</div>
+            <div style={{ fontSize:10, color:C.champagne, marginBottom:6 }}>★ {r.rating}</div>
+            <div style={{ display:"flex", gap:6 }}>
+              {r.tags.map(t => <span key={t} style={{ fontSize:9, padding:"2px 8px", borderRadius:10, background:"#151515", color:C.muted }}>{t}</span>)}
+            </div>
+          </div>
+        ))}
       </div>
     ),
-    caption: { title: "Bruxner Highway — Gibraltar Range" },
+    caption: null,
   },
 ];
 
@@ -4268,13 +4312,19 @@ const TourModal = ({ onClose }) => {
   const slide = TOUR_SLIDES[index];
   return (
     <div style={{ position:"fixed", inset:0, zIndex:200, background:C.midnight, display:"flex", flexDirection:"column", padding:20 }}>
-      <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:14 }}>
+      <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:14, maxWidth:480, width:"100%", margin:"0 auto 14px" }}>
         <span onClick={onClose} style={{ fontSize:22, color:C.dim, cursor:"pointer", padding:4 }}>✕</span>
       </div>
-      <div style={{ flex:1, minHeight:0 }}>
+      {/* Session 27: capped at maxWidth:480 (same as the rest of the splash
+          page) — previously stretched edge-to-edge on desktop, producing an
+          extreme wide aspect ratio that made object-fit:cover crop photos
+          far more aggressively than on a phone ("blown out" per Scott).
+          Keeping the box phone-shaped regardless of window width fixes it
+          at the source rather than fighting object-fit per slide. */}
+      <div style={{ flex:1, minHeight:0, maxWidth:480, width:"100%", margin:"0 auto", display:"flex" }}>
         <TourSlideBox slide={slide} index={index} height="100%" />
       </div>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:16 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:16, maxWidth:480, width:"100%", margin:"16px auto 0" }}>
         <div style={{ fontSize:12, color:C.muted }}>{slide.meta}</div>
         <div style={{ display:"flex", gap:8 }}>
           {TOUR_SLIDES.map((s, i) => (
