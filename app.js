@@ -3969,8 +3969,10 @@ const PILLARS = [
 ];
 
 const SplashScreen = ({ inviterName, runInvite, onContinue }) => {
+  const [showTour, setShowTour] = useState(false);
   return (
     <div style={{ height:"100dvh", overflowY:"auto", background:C.midnight, color:C.bone }}>
+      {showTour && <TourModal onClose={() => setShowTour(false)} />}
       <div style={{ maxWidth:480, margin:"0 auto", padding:"0 0 40px" }}>
 
         {/* Hero */}
@@ -3996,7 +3998,13 @@ const SplashScreen = ({ inviterName, runInvite, onContinue }) => {
           </div>
         </div>
 
-        <TourSlideshow />
+        <div style={{ margin:"28px 20px 0" }}>
+          <button
+            onClick={() => setShowTour(true)}
+            style={{ width:"100%", padding:"13px 0", background:"transparent", border:`1px solid ${C.champagne}`, borderRadius:10, color:C.champagne, fontFamily:"'Josefin Sans', sans-serif", fontSize:13, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.08em", cursor:"pointer" }}>
+            🎬 Take a Tour
+          </button>
+        </div>
 
         {/* Invite feature — run-specific takes priority over the generic mate-invite */}
         {runInvite ? (
@@ -4065,59 +4073,59 @@ const SplashScreen = ({ inviterName, runInvite, onContinue }) => {
 // generic stock mockup chrome, so it reads as a genuine peek rather than
 // marketing filler. CSS-only animation — restarted each slide via the
 // `key` prop forcing a remount, rather than manual JS animation control.
+// Session 23: Scott's "take a tour" ask — illustrative previews (not live
+// screenshots pulled from real user data) of six core screens, each panning
+// like a Ken Burns effect, alternating direction per slide as specified.
+// Built from the same style tokens as the real screens (GarageView's card
+// treatment, the /run/:id invite card, TripPlanner's form) rather than
+// generic stock mockup chrome, so it reads as a genuine peek rather than
+// marketing filler.
+//
+// Session 24 fixes: (1) the embedded inline box didn't fit small screens —
+// replaced with a "Take a Tour" button opening a full-screen modal instead.
+// (2) real bug: caption text (vehicle name, run title) used to live INSIDE
+// the same layer that pans/scales, so it got swept along and clipped
+// off-screen mid-animation. Fixed by splitting each slide into `bg`
+// (pans/scales, purely decorative, no text) and a stationary `caption`
+// overlay pinned to the bottom that never moves. (3) `photoUrl` — the
+// Garage and Trip Invites slides now use a real, already-hosted photo of
+// Scott's Z4 (pulled from R2 the same way /run/:id already does) instead
+// of a gradient, per the "looks bare" feedback — the other four are still
+// gradient placeholders pending a couple more real photo URLs.
+const SCOTT_Z4_PHOTO = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/scott_cc_v1781786987231_1781787046541.jpg";
+
 const TOUR_SLIDES = [
   {
-    label: "Your Garage",
+    meta: "Your Garage",
     pan: "panLR",
-    render: () => (
-      <div style={{ position:"relative", inset:0, width:"100%", height:"100%", background:"linear-gradient(135deg, #2a1810, #0d0d0d 60%)" }}>
-        <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at 30% 40%, rgba(192,57,43,0.25), transparent 60%)" }} />
-        <div style={{ position:"absolute", bottom:18, left:18, right:18 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
-            <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:20, fontWeight:600, color:C.bone }}>2005 BMW Z4</div>
-            <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:C.champagneDim, color:C.champagne }}>★ Primary</span>
-          </div>
-          <div style={{ fontSize:11, color:C.muted }}>E85 3.0i Roadster · Imola Red</div>
-        </div>
-      </div>
-    ),
+    photoUrl: SCOTT_Z4_PHOTO,
+    bg: () => <div style={{ position:"absolute", inset:0, background:"linear-gradient(135deg, #2a1810, #0d0d0d 60%)" }}>
+      <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at 30% 40%, rgba(192,57,43,0.25), transparent 60%)" }} />
+    </div>,
+    caption: { title: "2005 BMW Z4", subtitle: "E85 3.0i Roadster · Imola Red", badge: "★ Primary" },
   },
   {
-    label: "Trip Postcards",
+    meta: "Trip Postcards",
     pan: "panRL",
-    render: () => (
-      <div style={{ position:"relative", inset:0, width:"100%", height:"100%", background:"linear-gradient(200deg, #1a2530, #0d0d0d 65%)" }}>
-        <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at 70% 30%, rgba(46,109,164,0.28), transparent 60%)" }} />
-        <div style={{ position:"absolute", top:16, left:18, fontSize:10, letterSpacing:"0.15em", textTransform:"uppercase", color:C.champagne }}>Kenilworth–Maleny Road</div>
-        <div style={{ position:"absolute", bottom:18, left:18, right:18 }}>
-          <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:19, fontWeight:600, color:C.bone, marginBottom:4 }}>Sunday Cruise</div>
-          <div style={{ fontSize:11, color:C.muted }}>128km logged · 2hr 40min</div>
-        </div>
-      </div>
-    ),
+    photoUrl: null,
+    bg: () => <div style={{ position:"absolute", inset:0, background:"linear-gradient(200deg, #1a2530, #0d0d0d 65%)" }}>
+      <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at 70% 30%, rgba(46,109,164,0.28), transparent 60%)" }} />
+    </div>,
+    caption: { title: "Sunday Cruise", subtitle: "128km logged · 2hr 40min", eyebrow: "Kenilworth–Maleny Road" },
   },
   {
-    label: "Trip Invites",
+    meta: "Trip Invites",
     pan: "panBT",
-    render: () => (
-      <div style={{ position:"relative", inset:0, width:"100%", height:"100%", background:"#111" }}>
-        <div style={{ position:"absolute", inset:0, background:"linear-gradient(160deg, #151515, #0a0a0a)" }} />
-        <div style={{ position:"absolute", top:14, left:18 }}>
-          <span style={{ fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", padding:"3px 10px", borderRadius:12, background:C.blue, color:"#fff" }}>Confirmed</span>
-        </div>
-        <div style={{ position:"absolute", bottom:18, left:18, right:18 }}>
-          <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:19, fontWeight:700, color:C.bone, marginBottom:4 }}>Friday Donut Run</div>
-          <div style={{ fontSize:11, color:C.champagne, marginBottom:2 }}>Friday · 0930</div>
-          <div style={{ fontSize:11, color:C.dim }}>3 going</div>
-        </div>
-      </div>
-    ),
+    photoUrl: SCOTT_Z4_PHOTO,
+    bg: () => <div style={{ position:"absolute", inset:0, background:"linear-gradient(160deg, #151515, #0a0a0a)" }} />,
+    caption: { title: "Friday Donut Run", subtitle: "Friday · 0930 · 3 going", badge: "Confirmed", badgeColor: C.blue },
   },
   {
-    label: "Plan a Run",
+    meta: "Plan a Run",
     pan: "panTB",
-    render: () => (
-      <div style={{ position:"relative", inset:0, width:"100%", height:"100%", background:"#0d0d0d", padding:20 }}>
+    photoUrl: null,
+    bg: () => (
+      <div style={{ position:"absolute", inset:0, background:"#0d0d0d", padding:20 }}>
         <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:6 }}>Run Name</div>
         <div style={{ height:30, border:`1px solid ${C.border}`, borderRadius:6, marginBottom:14 }} />
         <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:6 }}>Select Roads</div>
@@ -4128,12 +4136,14 @@ const TOUR_SLIDES = [
         <div style={{ height:34, borderRadius:8, background:`linear-gradient(135deg, ${C.champagne}, ${C.champagneLight})`, opacity:0.85 }} />
       </div>
     ),
+    caption: null, // the mockup form IS the content here — no separate caption needed
   },
   {
-    label: "GPS Logbook",
+    meta: "GPS Logbook",
     pan: "panLR",
-    render: () => (
-      <div style={{ position:"relative", inset:0, width:"100%", height:"100%", background:"#0d0d0d", padding:20 }}>
+    photoUrl: null,
+    bg: () => (
+      <div style={{ position:"absolute", inset:0, background:"#0d0d0d", padding:20 }}>
         {[["Sat 12 Sept", "84km"], ["Sun 13 Sept", "142km"], ["Wed 16 Sept", "61km"]].map(([d, k]) => (
           <div key={d} style={{ display:"flex", justifyContent:"space-between", padding:"10px 0", borderBottom:`1px solid ${C.border}` }}>
             <span style={{ fontSize:12, color:C.bone }}>{d}</span>
@@ -4143,24 +4153,52 @@ const TOUR_SLIDES = [
         <div style={{ marginTop:10, fontSize:10, color:C.dim }}>Compliance-ready trail — logged automatically</div>
       </div>
     ),
+    caption: null,
   },
   {
-    label: "Community Roads",
+    meta: "Community Roads",
     pan: "panRL",
-    render: () => (
-      <div style={{ position:"relative", inset:0, width:"100%", height:"100%", background:"#0a0f12" }}>
+    photoUrl: null,
+    bg: () => (
+      <div style={{ position:"absolute", inset:0, background:"#0a0f12" }}>
         <svg viewBox="0 0 340 220" style={{ position:"absolute", inset:0, width:"100%", height:"100%" }}>
           <path d="M-10,180 Q90,140 160,150 Q230,160 350,60" stroke={C.champagne} strokeWidth="2" fill="none" opacity="0.6"/>
           <circle cx="90" cy="150" r="4" fill={C.red}/>
           <circle cx="230" cy="90" r="4" fill={C.blue}/>
         </svg>
-        <div style={{ position:"absolute", bottom:18, left:18, fontSize:12, color:C.champagne }}>Bruxner Highway — Gibraltar Range</div>
       </div>
     ),
+    caption: { title: "Bruxner Highway — Gibraltar Range" },
   },
 ];
 
-const TourSlideshow = () => {
+// The slide box itself — pannable background layer + stationary caption
+// overlay on top, sized by the `height` prop so the same component works
+// both small (unused now, kept for potential future inline use) and full
+// screen inside TourModal.
+const TourSlideBox = ({ slide, index, height }) => (
+  <div style={{ position:"relative", height, borderRadius:14, overflow:"hidden", border:`1px solid ${C.border}` }}>
+    <div key={index} style={{ position:"absolute", inset:"-8%", animation:`${slide.pan} 4.5s linear forwards` }}>
+      {slide.photoUrl
+        ? <img src={slide.photoUrl} alt="" style={{ position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover" }} />
+        : slide.bg()}
+    </div>
+    {slide.photoUrl && <div style={{ position:"absolute", inset:0, background:"linear-gradient(to top, rgba(0,0,0,0.55), rgba(0,0,0,0.05) 50%)" }} />}
+    {slide.caption && (
+      <div style={{ position:"absolute", bottom:0, left:0, right:0, padding:18 }}>
+        {slide.caption.eyebrow && <div style={{ fontSize:10, letterSpacing:"0.15em", textTransform:"uppercase", color:C.champagne, marginBottom:8 }}>{slide.caption.eyebrow}</div>}
+        {slide.caption.badge && <span style={{ display:"inline-block", fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", padding:"3px 10px", borderRadius:12, background: slide.caption.badgeColor || C.champagneDim, color: slide.caption.badgeColor ? "#fff" : C.champagne, marginBottom:8 }}>{slide.caption.badge}</span>}
+        <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:22, fontWeight:700, color:C.bone, marginBottom:4 }}>{slide.caption.title}</div>
+        {slide.caption.subtitle && <div style={{ fontSize:12, color:C.muted }}>{slide.caption.subtitle}</div>}
+      </div>
+    )}
+  </div>
+);
+
+// Full-screen tour — opened from the splash page's "Take a Tour" button
+// rather than embedded inline, since a small embedded box didn't have
+// enough room to show a slide clearly on narrow screens.
+const TourModal = ({ onClose }) => {
   const [index, setIndex] = useState(0);
   useEffect(() => {
     const t = setInterval(() => setIndex(i => (i + 1) % TOUR_SLIDES.length), 4500);
@@ -4168,17 +4206,18 @@ const TourSlideshow = () => {
   }, []);
   const slide = TOUR_SLIDES[index];
   return (
-    <div style={{ margin:"32px 20px 0" }}>
-      <div style={{ position:"relative", height:220, borderRadius:14, overflow:"hidden", border:`1px solid ${C.border}` }}>
-        <div key={index} style={{ position:"absolute", inset:"-8%", animation:`${slide.pan} 4.5s linear forwards` }}>
-          {slide.render()}
-        </div>
+    <div style={{ position:"fixed", inset:0, zIndex:200, background:C.midnight, display:"flex", flexDirection:"column", padding:20 }}>
+      <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:14 }}>
+        <span onClick={onClose} style={{ fontSize:22, color:C.dim, cursor:"pointer", padding:4 }}>✕</span>
       </div>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:10 }}>
-        <div style={{ fontSize:12, color:C.muted }}>{slide.label}</div>
-        <div style={{ display:"flex", gap:6 }}>
+      <div style={{ flex:1, minHeight:0 }}>
+        <TourSlideBox slide={slide} index={index} height="100%" />
+      </div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:16 }}>
+        <div style={{ fontSize:12, color:C.muted }}>{slide.meta}</div>
+        <div style={{ display:"flex", gap:8 }}>
           {TOUR_SLIDES.map((s, i) => (
-            <div key={i} onClick={() => setIndex(i)} style={{ width:6, height:6, borderRadius:"50%", background: i === index ? C.champagne : C.faint, cursor:"pointer" }} />
+            <div key={i} onClick={() => setIndex(i)} style={{ width:7, height:7, borderRadius:"50%", background: i === index ? C.champagne : C.faint, cursor:"pointer" }} />
           ))}
         </div>
       </div>
