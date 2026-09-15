@@ -2412,8 +2412,13 @@ const drawTripInviteCard = async ({ title, dateLabel, timeLabel, waypoints, vehi
   shadowText("R O A D S ,   R I V E R S   &   R I F F S", cx, wordmarkY + wordmarkSize * 0.22 + 12);
 
   // Trip info — pinned toward the bottom, same darkened zone as
-  // drawTripCard's stats block.
-  const midY = photoOrMapDrawn ? 1000 : 680;
+  // drawTripCard's stats block. Session 29 fix: midY nudged down from
+  // 1000 to 1160 — with a full waypoint set (this trip has 7), the
+  // dashed route + labels spread further down the card than a typical
+  // GPS trail does, so the old position overlapped the busiest part of
+  // the map. Line spacing tightened slightly (55/100/145 → 42/78/114)
+  // to compensate and still land comfortably above the byline at 1300.
+  const midY = photoOrMapDrawn ? 1160 : 680;
   const titleSize = fitText(ctx, title, CARD_W - 140, 88, 48, s => `700 ${s}px 'Cormorant Garamond'`);
   ctx.fillStyle = C.bone;
   ctx.font = `700 ${titleSize}px 'Cormorant Garamond'`;
@@ -2421,24 +2426,24 @@ const drawTripInviteCard = async ({ title, dateLabel, timeLabel, waypoints, vehi
 
   ctx.fillStyle = C.champagneLight;
   ctx.font = "600 30px 'Josefin Sans'";
-  shadowText(dateLabel + (timeLabel ? ` · ${timeLabel}` : ""), cx, midY + 55);
+  shadowText(dateLabel + (timeLabel ? ` · ${timeLabel}` : ""), cx, midY + 42);
 
   if (hasWaypoints) {
     ctx.fillStyle = "rgba(245,243,238,0.8)";
     ctx.font = "400 26px 'Josefin Sans'";
-    shadowText(`Meeting at ${waypoints[0].label}`, cx, midY + 100);
+    shadowText(`Meeting at ${waypoints[0].label}`, cx, midY + 78);
   }
 
   if (roadNames && roadNames.length) {
     ctx.fillStyle = C.champagne;
     ctx.font = "500 24px 'Josefin Sans'";
-    shadowText(roadNames.join(" • "), cx, midY + 145);
+    shadowText(roadNames.join(" • "), cx, midY + 114);
   }
 
   ctx.fillStyle = "rgba(245,243,238,0.55)";
   ctx.font = "400 22px 'Josefin Sans'";
   const bylineParts = [vehicleLabel, organiserDisplayName ? `Hosted by ${organiserDisplayName}` : null, goingCount ? `${goingCount} going` : null].filter(Boolean);
-  shadowText(bylineParts.join(" · "), cx, 1300);
+  shadowText(bylineParts.join(" · "), cx, 1312);
 
   return new Promise(resolve => canvas.toBlob(blob => resolve(blob), "image/png", 0.95));
 };
