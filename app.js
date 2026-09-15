@@ -4134,8 +4134,14 @@ const TOUR_SLIDES = [
     caption: { title: "1986 My Guitars Tele's and Strat's", subtitle: "Telecaster, Stratocaster, Custom Build · Multiple", eyebrow: "🎸 Riffs" },
   },
   {
+    // Session 26: `fit:true` — this is a fully-composed poster where every
+    // edge matters (title, stats, route all baked in). The panLR/panRL/etc
+    // treatment below oversizes content by ~30% (inset:-8% stacked with
+    // scale(1.12)) specifically so a photographic background can be
+    // "scanned" without ever showing a hard edge — wrong for something
+    // that's meant to be seen in full. `fit` slides skip that entirely.
     meta: "Trip Postcards",
-    pan: "panRL",
+    fit: true,
     photoUrl: SCOTT_JAG_POSTCARD,
     bg: () => <div style={{ position:"absolute", inset:0, background:"#0d0d0d" }} />,
     caption: null, // the postcard already has its own title/stats/route baked in — no need to double up
@@ -4145,11 +4151,25 @@ const TOUR_SLIDES = [
     pan: "panBT",
     photoUrl: SCOTT_Z4_PHOTO,
     bg: () => <div style={{ position:"absolute", inset:0, background:"linear-gradient(160deg, #151515, #0a0a0a)" }} />,
-    caption: { title: "Friday Donut Run", subtitle: "Friday · 0930 · 3 going", badge: "Confirmed", badgeColor: C.blue },
+    caption: { title: "Kenilworth Donuts Run", subtitle: "Friday · 0930 · 1 going", badge: "Confirmed", badgeColor: C.blue },
+    // Session 26: replicates the real /run/:id waypoint treatment (dotted
+    // line + bold place-name labels bleeding through a faded map over the
+    // vehicle photo) in miniature — the tour previously just showed a
+    // plain caption here with none of that, per Scott's screenshot of the
+    // actual feature. Stationary (not part of the pannable layer) so
+    // labels never get swept off-frame the way the caption bug did before.
+    routeOverlay: {
+      points: "18,15 42,35 30,55 58,72",
+      labels: [
+        { text: "Kenilworth", x: 18, y: 15 },
+        { text: "Witta", x: 42, y: 35 },
+        { text: "Landsborough", x: 58, y: 72 },
+      ],
+    },
   },
   {
     meta: "Plan a Run",
-    pan: "panTB",
+    fit: true,
     photoUrl: null,
     bg: () => (
       <div style={{ position:"absolute", inset:0, background:"#0d0d0d", display:"flex", flexDirection:"column", justifyContent:"center", padding:"0 8%" }}>
@@ -4163,11 +4183,11 @@ const TOUR_SLIDES = [
         <div style={{ height:44, borderRadius:10, background:`linear-gradient(135deg, ${C.champagne}, ${C.champagneLight})`, opacity:0.85 }} />
       </div>
     ),
-    caption: null, // the mockup form IS the content here — no separate caption needed
+    caption: null,
   },
   {
     meta: "GPS Logbook",
-    pan: "panLR",
+    fit: true,
     photoUrl: null,
     bg: () => (
       <div style={{ position:"absolute", inset:0, background:"#0d0d0d", display:"flex", flexDirection:"column", justifyContent:"center", padding:"0 8%" }}>
@@ -4184,7 +4204,7 @@ const TOUR_SLIDES = [
   },
   {
     meta: "Community Roads",
-    pan: "panRL",
+    fit: true,
     photoUrl: null,
     bg: () => (
       <div style={{ position:"absolute", inset:0, background:"#0a0f12" }}>
@@ -4203,14 +4223,28 @@ const TOUR_SLIDES = [
 // overlay on top, sized by the `height` prop so the same component works
 // both small (unused now, kept for potential future inline use) and full
 // screen inside TourModal.
+// Session 26: `fit` slides render at inset:0 with no scale/animation at
+// all — a self-contained composition (a poster, a form mockup, a list, a
+// map) needs every edge visible, not oversized and panned like a photo
+// background. `routeOverlay` (dotted line + place-name labels) is its own
+// stationary layer, same reasoning as the caption fix last session —
+// anything meant to stay readable can't live inside the panned/scaled div.
 const TourSlideBox = ({ slide, index, height }) => (
   <div style={{ position:"relative", height, borderRadius:14, overflow:"hidden", border:`1px solid ${C.border}` }}>
-    <div key={index} style={{ position:"absolute", inset:"-8%", animation:`${slide.pan} 4.5s linear forwards` }}>
+    <div key={index} style={{ position:"absolute", inset: slide.fit ? 0 : "-8%", animation: slide.fit ? "none" : `${slide.pan} 4.5s linear forwards` }}>
       {slide.photoUrl
         ? <img src={slide.photoUrl} alt="" style={{ position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover" }} />
         : slide.bg()}
     </div>
     {slide.photoUrl && slide.caption && <div style={{ position:"absolute", inset:0, background:"linear-gradient(to top, rgba(0,0,0,0.55), rgba(0,0,0,0.05) 50%)" }} />}
+    {slide.routeOverlay && (
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position:"absolute", inset:0, width:"100%", height:"100%" }}>
+        <polyline points={slide.routeOverlay.points} fill="none" stroke={C.champagne} strokeWidth="0.5" strokeDasharray="1.2,1.2" strokeOpacity="0.8" />
+      </svg>
+    )}
+    {slide.routeOverlay && slide.routeOverlay.labels.map((l, i) => (
+      <div key={i} style={{ position:"absolute", left:`${l.x}%`, top:`${l.y}%`, transform:"translate(-50%,-50%)", fontSize:12, fontWeight:600, color:C.bone, textShadow:"0 1px 3px rgba(0,0,0,0.9), 0 0 8px rgba(0,0,0,0.6)", whiteSpace:"nowrap" }}>{l.text}</div>
+    ))}
     {slide.caption && (
       <div style={{ position:"absolute", bottom:0, left:0, right:0, padding:18 }}>
         {slide.caption.eyebrow && <div style={{ fontSize:10, letterSpacing:"0.15em", textTransform:"uppercase", color:C.champagne, marginBottom:8 }}>{slide.caption.eyebrow}</div>}
