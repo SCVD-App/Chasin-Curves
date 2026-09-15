@@ -1559,7 +1559,14 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onRefreshPoints, onBack, onR
               const isHero = vehicle.heroPhoto === photo.id;
               return (
                 <div key={photo.id} style={{ position: "relative", aspectRatio: "1", borderRadius: 8, overflow: "hidden", border: "2px solid " + (isHero ? C.champagne : "transparent") }}>
-                  <img src={photo.url} alt="" onClick={() => setFullscreen(photos.indexOf(photo))} style={{ width: "100%", height: "100%", objectFit: "cover", cursor: "pointer" }} />
+                  {/* Session 25: objectPosition:"top" — was a centered crop by
+                      default, which for anything tall (a saved trip postcard,
+                      for instance) chops content off both top and bottom
+                      equally. Anchoring to top instead keeps the most
+                      important content (a banner, a subject's face/roofline)
+                      intact for tall images; makes negligible difference for
+                      ordinary landscape/near-square vehicle photos. */}
+                  <img src={photo.url} alt="" onClick={() => setFullscreen(photos.indexOf(photo))} style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "top", cursor: "pointer" }} />
                   <button onClick={() => setHero(photo.id)}
                     style={{ position: "absolute", top: 4, left: 4, background: isHero ? C.champagne : "rgba(0,0,0,0.6)", border: "none", borderRadius: "50%", width: 24, height: 24, fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                     ★
@@ -4105,6 +4112,9 @@ const SCOTT_Z4_PHOTO = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/scot
 const SCOTT_GUITAR_PHOTO_1 = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/emblen_scott_gmail_com_v1789438741327_1789439007278.jpg";
 const SCOTT_GUITAR_PHOTO_2 = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/emblen_scott_gmail_com_v1789438741327_1789439025769.jpg";
 const SCOTT_GUITAR_PHOTO_3 = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/emblen_scott_gmail_com_v1789438741327_1789439037981.jpg";
+// Session 25: Scott's own real trip postcard (Beerwah ↔ Mount Mellum,
+// 10km, 2004 Jaguar X350) — replaces the gradient-only placeholder below.
+const SCOTT_JAG_POSTCARD = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/emblen_scott_gmail_com_v1781787551054_1789440765319.jpg";
 
 const TOUR_SLIDES = [
   {
@@ -4126,11 +4136,9 @@ const TOUR_SLIDES = [
   {
     meta: "Trip Postcards",
     pan: "panRL",
-    photoUrl: null,
-    bg: () => <div style={{ position:"absolute", inset:0, background:"linear-gradient(200deg, #1a2530, #0d0d0d 65%)" }}>
-      <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at 70% 30%, rgba(46,109,164,0.28), transparent 60%)" }} />
-    </div>,
-    caption: { title: "Sunday Cruise", subtitle: "128km logged · 2hr 40min", eyebrow: "Kenilworth–Maleny Road" },
+    photoUrl: SCOTT_JAG_POSTCARD,
+    bg: () => <div style={{ position:"absolute", inset:0, background:"#0d0d0d" }} />,
+    caption: null, // the postcard already has its own title/stats/route baked in — no need to double up
   },
   {
     meta: "Trip Invites",
@@ -4144,15 +4152,15 @@ const TOUR_SLIDES = [
     pan: "panTB",
     photoUrl: null,
     bg: () => (
-      <div style={{ position:"absolute", inset:0, background:"#0d0d0d", padding:20 }}>
-        <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:6 }}>Run Name</div>
-        <div style={{ height:30, border:`1px solid ${C.border}`, borderRadius:6, marginBottom:14 }} />
-        <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:6 }}>Select Roads</div>
-        <div style={{ display:"flex", gap:6, marginBottom:14 }}>
-          <span style={{ fontSize:10, padding:"5px 10px", borderRadius:14, border:`1px solid ${C.champagne}`, color:C.champagne }}>✓ Kenilworth Rd</span>
-          <span style={{ fontSize:10, padding:"5px 10px", borderRadius:14, border:`1px solid ${C.border}`, color:C.dim }}>Peachester Rd</span>
+      <div style={{ position:"absolute", inset:0, background:"#0d0d0d", display:"flex", flexDirection:"column", justifyContent:"center", padding:"0 8%" }}>
+        <div style={{ fontSize:12, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:8 }}>Run Name</div>
+        <div style={{ height:40, border:`1px solid ${C.border}`, borderRadius:8, marginBottom:24 }} />
+        <div style={{ fontSize:12, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:8 }}>Select Roads</div>
+        <div style={{ display:"flex", gap:8, marginBottom:28, flexWrap:"wrap" }}>
+          <span style={{ fontSize:12, padding:"7px 14px", borderRadius:16, border:`1px solid ${C.champagne}`, color:C.champagne }}>✓ Kenilworth Rd</span>
+          <span style={{ fontSize:12, padding:"7px 14px", borderRadius:16, border:`1px solid ${C.border}`, color:C.dim }}>Peachester Rd</span>
         </div>
-        <div style={{ height:34, borderRadius:8, background:`linear-gradient(135deg, ${C.champagne}, ${C.champagneLight})`, opacity:0.85 }} />
+        <div style={{ height:44, borderRadius:10, background:`linear-gradient(135deg, ${C.champagne}, ${C.champagneLight})`, opacity:0.85 }} />
       </div>
     ),
     caption: null, // the mockup form IS the content here — no separate caption needed
@@ -4162,14 +4170,14 @@ const TOUR_SLIDES = [
     pan: "panLR",
     photoUrl: null,
     bg: () => (
-      <div style={{ position:"absolute", inset:0, background:"#0d0d0d", padding:20 }}>
+      <div style={{ position:"absolute", inset:0, background:"#0d0d0d", display:"flex", flexDirection:"column", justifyContent:"center", padding:"0 8%" }}>
         {[["Sat 12 Sept", "84km"], ["Sun 13 Sept", "142km"], ["Wed 16 Sept", "61km"]].map(([d, k]) => (
-          <div key={d} style={{ display:"flex", justifyContent:"space-between", padding:"10px 0", borderBottom:`1px solid ${C.border}` }}>
-            <span style={{ fontSize:12, color:C.bone }}>{d}</span>
-            <span style={{ fontSize:12, color:C.champagne }}>{k}</span>
+          <div key={d} style={{ display:"flex", justifyContent:"space-between", padding:"16px 0", borderBottom:`1px solid ${C.border}` }}>
+            <span style={{ fontSize:15, color:C.bone }}>{d}</span>
+            <span style={{ fontSize:15, color:C.champagne }}>{k}</span>
           </div>
         ))}
-        <div style={{ marginTop:10, fontSize:10, color:C.dim }}>Compliance-ready trail — logged automatically</div>
+        <div style={{ marginTop:18, fontSize:12, color:C.dim }}>Compliance-ready trail — logged automatically</div>
       </div>
     ),
     caption: null,
@@ -4180,7 +4188,7 @@ const TOUR_SLIDES = [
     photoUrl: null,
     bg: () => (
       <div style={{ position:"absolute", inset:0, background:"#0a0f12" }}>
-        <svg viewBox="0 0 340 220" style={{ position:"absolute", inset:0, width:"100%", height:"100%" }}>
+        <svg viewBox="0 0 340 220" preserveAspectRatio="xMidYMid slice" style={{ position:"absolute", inset:0, width:"100%", height:"100%" }}>
           <path d="M-10,180 Q90,140 160,150 Q230,160 350,60" stroke={C.champagne} strokeWidth="2" fill="none" opacity="0.6"/>
           <circle cx="90" cy="150" r="4" fill={C.red}/>
           <circle cx="230" cy="90" r="4" fill={C.blue}/>
@@ -4202,7 +4210,7 @@ const TourSlideBox = ({ slide, index, height }) => (
         ? <img src={slide.photoUrl} alt="" style={{ position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover" }} />
         : slide.bg()}
     </div>
-    {slide.photoUrl && <div style={{ position:"absolute", inset:0, background:"linear-gradient(to top, rgba(0,0,0,0.55), rgba(0,0,0,0.05) 50%)" }} />}
+    {slide.photoUrl && slide.caption && <div style={{ position:"absolute", inset:0, background:"linear-gradient(to top, rgba(0,0,0,0.55), rgba(0,0,0,0.05) 50%)" }} />}
     {slide.caption && (
       <div style={{ position:"absolute", bottom:0, left:0, right:0, padding:18 }}>
         {slide.caption.eyebrow && <div style={{ fontSize:10, letterSpacing:"0.15em", textTransform:"uppercase", color:C.champagne, marginBottom:8 }}>{slide.caption.eyebrow}</div>}
