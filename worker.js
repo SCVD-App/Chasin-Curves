@@ -1,4 +1,4 @@
-// Chasin' Curves — Worker v3.1
+// Chasin' Curves — Worker v3.11
 // Session 12: Email + 6-digit code auth replaces open username login.
 //             member/garage routes now require a valid session bound to the
 //             requester's own email — closes the "type anyone's username,
@@ -79,7 +79,74 @@
 //             — see awardPoints()) redeems 1 free month of Pro. Not
 //             publicised in the UI yet — just a plain line in the Points
 //             tab — until real accrual rates validate the number.
-// Endpoints: 34 total
+// Session 19: Planned Runs backend — foundation for a shareable "invite"
+//             feature (Facebook/Instagram growth play). Discovered mid-
+//             session that /trips + TripPlanner already WAS this feature
+//             ("Plan a Run" / "Join this Run" in the UI) — extended rather
+//             than duplicated. Two real gaps found and fixed while adding
+//             this: (1) app.js's joinTrip() only updated local React state,
+//             never called the server — RSVPs were never actually
+//             persisted, lost on every reload; (2) the existing PUT
+//             /trips/:id pattern is a full-object merge, which is a race
+//             condition for concurrent RSVPs if a client ever sent a
+//             locally-recomputed attendees array through it. Added a
+//             dedicated POST /trips/:id/rsvp that does an atomic
+//             read-modify-write of a single attendee's status server-side
+//             instead. New: `status` field on trips (open/unconfirmed/
+//             cancelled/closed, defaults to open), POST /trips/:id/cancel
+//             (host-only, requires a `reason` from CANCEL_REASONS), and
+//             GET /trips/:id/public (no-auth sanitized single-trip view —
+//             foundation for the public share-link page, not built yet).
+//             Nudge/auto-cancel cron, the share page itself, and RSVP/
+//             cancel UI are next session — this session is backend only.
+//             LIVE BUG FOUND on first real test with a second account
+//             (Lorna): every trip-ID route match (PUT /trips/:id, the new
+//             rsvp/cancel/public endpoints) compared `t.id === id` where
+//             `t.id` is a number (client creates trips with `id: Date.now()`
+//             in app.js) but `id` from the URL regex capture is always a
+//             string — silent 404 on every one of these routes. This bug
+//             pre-dates this session; it was never caught before because
+//             the old joinTrip() never actually called the server. Fixed
+//             by coercing to `String(t.id) === id` at all four trip-ID
+//             comparison sites.
+// Session 20: Public run invite page — GET /run/:id, server-rendered HTML
+//             (not the React app) with Open Graph tags, since Facebook/
+//             Instagram's link-preview crawlers generally don't execute
+//             JS. Scott's call on the hero image: rather than build new
+//             cover-photo upload infrastructure, reuse the organiser's
+//             already-selected vehicle (trip.vehicleId, chosen at planning
+//             time) and pull its existing Garage heroPhotoUrl — no new
+//             upload feature needed, and it doubles as a "spot the car at
+//             the meeting point" cue for anyone who's never met the host.
+//             GET /trips/:id/public (added last session) also now returns
+//             vehiclePhotoUrl/vehicleLabel for the same reason. All user-
+//             authored text in the HTML page goes through escapeHtml() —
+//             this route has no auth wall, so it's genuinely public attack
+//             surface for stored XSS if a future field skips that step.
+//             Cover-photo upload, the canvas-generated Instagram-postable
+//             image, RSVP/cancel UI, the nudge/auto-cancel cron, and
+//             reliability tracking are still not built — next session.
+// Session 21: Waypoint capture (app.js TripPlanner — geocoded stops, first
+//             = meeting point, last = end point) plus a run-page redesign
+//             per Scott's call: no separate map block, no pins/route line.
+//             Instead the vehicle hero gets a thin (opacity 0.22, screen
+//             blend) faded map layered on top, with bold waypoint NAME
+//             labels positioned by real Web Mercator projection — ported
+//             from app.js's own trip-postcard bbox-aspect-correction code
+//             rather than reinvented, since that code exists specifically
+//             because of a prior alignment bug (route drifting off the
+//             roads under it when the requested image's aspect ratio
+//             didn't match the bbox). Requesting the map at the exact same
+//             16:10 aspect as the .hero CSS box is what makes the
+//             percentage-based label positions land correctly regardless
+//             of the visitor's screen width.
+// Session 22: /run/:id's CTA now carries run context (id/title/host) as
+//             query params into the app URL, so the new magazine splash
+//             page (built in app.js) can greet an arriving visitor with
+//             the specific run they were invited to rather than a
+//             generic pitch. No other worker.js change this session —
+//             the splash page itself lives entirely in app.js.
+// Endpoints: 39 total
 //
 // Secrets required in Cloudflare dashboard:
 //   RESEND_API_KEY        ← re_... from resend.com dashboard (already in use for Mic Drop)
@@ -286,6 +353,14 @@ const ADMIN_PLANS = { ...PRO_PLANS, lifetime: { label: 'Lifetime (comp)', amount
 const POINTS_PER_PRO_MONTH = 1000;
 const REDEEM_MONTH_DAYS = 30;
 
+// ── PLANNED RUNS — Session 19 ────────────────────────────────────────────
+// Cancellation reasons for POST /trips/:id/cancel. `low_interest` is the
+// only one meant to count against a host's future reliability signal (not
+// built yet — see handoff.md) once that lands; weather/hazard/personal are
+// outside a host's control and shouldn't be held against them the same way.
+const CANCEL_REASONS = ['weather', 'hazard', 'low_interest', 'personal'];
+const TRIP_STATUSES = ['open', 'unconfirmed', 'cancelled', 'closed'];
+
 function isMemberPro(member) {
   if (!member) return false;
   if (member.proLifetime) return true;
@@ -364,6 +439,274 @@ async function grantPro(env, email, planId, plan, stripeSessionId) {
 
   await env.CURVES_KV.put(`member:${email}`, JSON.stringify(member));
   return true;
+}
+
+// ── RUN INVITE PAGE — Session 20 ─────────────────────────────────────────
+// Server-rendered HTML for the public /run/:id share link. Deliberately
+// plain string templating, not a framework — this worker has no build
+// step and this is one page, not worth a templating dependency. Every
+// piece of trip/member/vehicle text is user-authored, so it goes through
+// escapeHtml() before landing in the markup — this endpoint has no auth
+// wall, so it's the app's actual public attack surface for stored XSS if
+// that step is ever skipped on a new field.
+const APP_URL = 'https://scvd-app.github.io/Chasin-Curves/';
+// Reused as-is from app.js's client-side constant — this is Mapbox's
+// public pk. token (designed for client embedding), not a secret, so
+// duplicating it server-side for the run-map overlay is safe.
+const MAPBOX_TOKEN = 'pk.eyJ1Ijoic2N2ZCIsImEiOiJjbXMzOHB1eXUwMzRjMzVvYm0ya29wYTZ1In0.FlTd5i3zPj5W7E57UaH5gw';
+const MAPBOX_MAX_DIMENSION_SERVER = 1280; // mirrors app.js's MAPBOX_MAX_DIMENSION — same cap, same reason
+const HERO_W = 1200, HERO_H = 750; // exact 16:10, matches the .hero CSS box below — label % positions only
+                                     // line up correctly if the requested map image's aspect ratio matches
+                                     // the box it's displayed in, same reasoning as app.js's correctBBoxAspect.
+
+// ── Web Mercator projection — ported from app.js's trip-postcard code
+// (mercatorY/correctBBoxAspect/projectPoint) rather than reinvented. That
+// code exists because of a real bug (route lines drifting off the roads
+// underneath them) caused by Mapbox silently re-padding a bbox whose aspect
+// ratio didn't match the requested image — same failure mode would hit
+// waypoint label positions here if skipped.
+const toRad = (d) => (d * Math.PI) / 180;
+const toDeg = (r) => (r * 180) / Math.PI;
+const mercatorY = (lat) => Math.log(Math.tan(Math.PI / 4 + toRad(lat) / 2));
+const mercatorYInverse = (y) => toDeg(2 * Math.atan(Math.exp(y)) - Math.PI / 2);
+
+function computeBBox(waypoints) {
+  let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+  for (const w of waypoints) {
+    if (w.lat < minLat) minLat = w.lat;
+    if (w.lat > maxLat) maxLat = w.lat;
+    if (w.lng < minLng) minLng = w.lng;
+    if (w.lng > maxLng) maxLng = w.lng;
+  }
+  const latSpan = Math.max(maxLat - minLat, 0.01);
+  const lngSpan = Math.max(maxLng - minLng, 0.01);
+  const latPad = latSpan * 0.18, lngPad = lngSpan * 0.18;
+  return { minLat: minLat - latPad, maxLat: maxLat + latPad, minLng: minLng - lngPad, maxLng: maxLng + lngPad };
+}
+
+function correctBBoxAspect(bbox, targetAspect) {
+  const xSpan = toRad(bbox.maxLng - bbox.minLng);
+  const yMercMin = mercatorY(bbox.minLat), yMercMax = mercatorY(bbox.maxLat);
+  const ySpan = yMercMax - yMercMin;
+  const currentAspect = xSpan / ySpan;
+  if (currentAspect < targetAspect) {
+    const xSpanNew = targetAspect * ySpan;
+    const centerLng = (bbox.minLng + bbox.maxLng) / 2;
+    const halfSpanDeg = toDeg(xSpanNew) / 2;
+    return { minLat: bbox.minLat, maxLat: bbox.maxLat, minLng: centerLng - halfSpanDeg, maxLng: centerLng + halfSpanDeg };
+  } else if (currentAspect > targetAspect) {
+    const ySpanNew = xSpan / targetAspect;
+    const yMercCenter = (yMercMin + yMercMax) / 2;
+    const halfSpanMerc = ySpanNew / 2;
+    return {
+      minLat: mercatorYInverse(yMercCenter - halfSpanMerc),
+      maxLat: mercatorYInverse(yMercCenter + halfSpanMerc),
+      minLng: bbox.minLng, maxLng: bbox.maxLng,
+    };
+  }
+  return bbox;
+}
+
+// Percentage position (0-100), not pixels — the hero renders at whatever
+// width the visitor's screen gives it, so CSS % keeps a label aligned with
+// its real-world point regardless of device.
+function projectToPercent(lng, lat, bbox) {
+  const xPct = ((lng - bbox.minLng) / (bbox.maxLng - bbox.minLng)) * 100;
+  const yMerc = mercatorY(lat);
+  const yMercMin = mercatorY(bbox.minLat), yMercMax = mercatorY(bbox.maxLat);
+  const yPct = 100 - ((yMerc - yMercMin) / (yMercMax - yMercMin)) * 100;
+  return [xPct, yPct];
+}
+
+// Plain (no markers/path — those are now hand-placed text labels instead)
+// faded map backdrop, sized to exactly match the hero box's aspect ratio.
+function buildFadedMapUrl(bbox) {
+  const scale = Math.min(1, MAPBOX_MAX_DIMENSION_SERVER / HERO_W, MAPBOX_MAX_DIMENSION_SERVER / HERO_H);
+  const reqW = Math.round(HERO_W * scale), reqH = Math.round(HERO_H * scale);
+  const bboxStr = `[${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}]`;
+  return `https://api.mapbox.com/styles/v1/mapbox/dark-v11/static/${bboxStr}/${reqW}x${reqH}@2x?access_token=${MAPBOX_TOKEN}`;
+}
+
+// Truncates a place label to just the town/suburb — takes everything
+// before the first comma. Applied at DISPLAY time (here, and again for
+// the meeting/end-point lines in renderRunPageHtml) rather than only at
+// capture time in app.js, so it fixes waypoints already saved with the
+// full "Town, Queensland, Australia" form from before this existed —
+// no need to re-add stops on any existing trip to get the short form.
+function shortenPlace(label) {
+  return String(label ?? '').split(',')[0].trim();
+}
+
+// Returns { mapUrl, labels: [{ text, xPct, yPct, kind }] } or null if fewer
+// than 2 waypoints (nothing meaningful to show). kind is 'start'/'end'/'via'
+// — drives the label's colour accent in the template.
+function buildWaypointOverlay(waypoints) {
+  if (!waypoints || waypoints.length < 2) return null;
+  const bbox = correctBBoxAspect(computeBBox(waypoints), HERO_W / HERO_H);
+  const mapUrl = buildFadedMapUrl(bbox);
+  const labels = waypoints.map((w, i) => {
+    const [xPct, yPct] = projectToPercent(w.lng, w.lat, bbox);
+    const kind = i === 0 ? 'start' : (i === waypoints.length - 1 ? 'end' : 'via');
+    return { text: shortenPlace(w.label), xPct, yPct, kind };
+  });
+  return { mapUrl, labels };
+}
+
+function escapeHtml(str) {
+  return String(str ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+function fmtDateLabel(dateStr) {
+  if (!dateStr) return '';
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  } catch { return dateStr; }
+}
+
+const STATUS_BADGES = {
+  open: { label: 'Confirmed', color: '#2E6DA4' },
+  unconfirmed: { label: 'Awaiting host update', color: '#C9A84C' },
+  cancelled: { label: 'Cancelled', color: '#C0392B' },
+  closed: { label: 'Closed', color: '#555' },
+};
+
+const CANCEL_REASON_LABELS = {
+  weather: 'Weather conditions', hazard: 'Dangerous conditions', low_interest: 'Insufficient interest', personal: "Host's personal circumstances",
+};
+
+function renderRunNotFoundHtml() {
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Run not found — Chasin' Curves</title>
+<style>body{background:#0d0d0d;color:#f5f3ee;font-family:Georgia,serif;text-align:center;padding:80px 24px;}</style></head>
+<body><h1 style="color:#C9A84C;">Run not found</h1><p>This invite link doesn't match a run we know about — it may have been removed.</p>
+<a href="${APP_URL}" style="color:#2E6DA4;">Go to Chasin' Curves</a></body></html>`;
+}
+
+function renderRunPageHtml({ trip, organiserDisplayName, vehiclePhotoUrl, vehicleLabel, roadNames, goingCount, maybeCount, waypointOverlay }) {
+  const title = escapeHtml(trip.title || 'A Chasin\u2019 Curves run');
+  const dateLabel = fmtDateLabel(trip.date);
+  const timeLabel = trip.time ? escapeHtml(trip.time) : '';
+  // Session 20: a run with waypoints derives its meeting/end point display
+  // from them (first/last) rather than the old free-text meetingPoint field
+  // — the planner form never actually collected that field, so waypoints
+  // are the real source of truth whenever they exist.
+  const waypoints = trip.waypoints || [];
+  const meetingPoint = waypoints[0]?.label ? escapeHtml(shortenPlace(waypoints[0].label)) : (trip.meetingPoint ? escapeHtml(trip.meetingPoint) : '');
+  const endPoint = waypoints.length > 1 ? escapeHtml(shortenPlace(waypoints[waypoints.length - 1].label)) : '';
+  const notes = trip.notes ? escapeHtml(trip.notes) : '';
+  const organiser = escapeHtml(organiserDisplayName);
+  const vehicle = vehicleLabel ? escapeHtml(vehicleLabel) : '';
+  const status = STATUS_BADGES[trip.status] || STATUS_BADGES.open;
+  const roadsLine = (roadNames || []).map(escapeHtml).join(' \u2022 ');
+  const heroUrl = vehiclePhotoUrl || null;
+
+  const ogDescriptionParts = [dateLabel, timeLabel, meetingPoint].filter(Boolean);
+  const ogDescription = escapeHtml(`${ogDescriptionParts.join(' \u00b7 ')} \u2014 hosted by ${organiserDisplayName} on Chasin' Curves`);
+  // Session 22: carries run context through to the splash page so it can
+  // greet an arriving visitor by the actual run they were invited to
+  // ("Kenilworth Donuts Run — hosted by Scott") rather than a generic
+  // pitch — the splash page itself lives in app.js, not here.
+  const joinUrl = `${APP_URL}?run=${encodeURIComponent(trip.id)}&title=${encodeURIComponent(trip.title || '')}&host=${encodeURIComponent(organiserDisplayName)}`;
+
+  const cancelBanner = trip.status === 'cancelled'
+    ? `<div style="background:rgba(192,57,43,0.12);border:1px solid rgba(192,57,43,0.4);border-radius:10px;padding:14px 18px;margin-bottom:20px;color:#f5f3ee;font-family:'Josefin Sans',sans-serif;font-size:14px;">
+        This run was cancelled${trip.cancelReason ? ` \u2014 ${escapeHtml(CANCEL_REASON_LABELS[trip.cancelReason] || trip.cancelReason)}` : ''}.
+      </div>`
+    : '';
+
+  // Session 20: waypoint names overlaid directly on the hero — a thin,
+  // low-opacity map backdrop (so it never competes with the vehicle photo)
+  // plus bold text labels positioned by real Web Mercator projection, not
+  // guessed. Start is champagne, end is Monza red, vias plain bone — kept
+  // to text only (no pins) per Scott's call: names are legible at a
+  // glance, which is the whole point, without pin clutter. Dotted line
+  // added per Scott's follow-up — an SVG polyline through the same label
+  // coordinates, since a viewBox="0 0 100 100" lets it use the identical
+  // percentage points with zero extra projection work. NOT using
+  // vector-effect="non-scaling-stroke" — that keeps stroke-width in real
+  // screen pixels rather than viewBox units, which made a 0.35 value
+  // render sub-pixel (i.e. invisible) once tested against a live run
+  // page. Plain viewBox-scaled stroke-width instead — the 16:10 hero's
+  // non-square aspect stretches x/y slightly unevenly, which is an
+  // acceptable trade for a thin dotted connector, not worth the added
+  // complexity of computing pixel-exact width to correct for it.
+  const LABEL_COLORS = { start: '#C9A84C', end: '#C0392B', via: '#f5f3ee' };
+  const mapOverlayHtml = waypointOverlay ? `
+    <img class="hero-map" src="${escapeHtml(waypointOverlay.mapUrl)}" alt=""/>
+    <svg class="hero-route" viewBox="0 0 100 100" preserveAspectRatio="none">
+      <polyline points="${waypointOverlay.labels.map(l => `${l.xPct.toFixed(2)},${l.yPct.toFixed(2)}`).join(' ')}"
+        fill="none" stroke="#C9A84C" stroke-width="0.6" stroke-dasharray="1.4,1.4" stroke-opacity="0.7"/>
+    </svg>
+    ${waypointOverlay.labels.map(l => `
+      <div class="waypoint-label" style="left:${l.xPct.toFixed(2)}%; top:${l.yPct.toFixed(2)}%; color:${LABEL_COLORS[l.kind]};">
+        ${escapeHtml(l.text)}
+      </div>`).join('')}
+  ` : '';
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>${title} \u2014 Chasin' Curves</title>
+<meta property="og:title" content="${title}"/>
+<meta property="og:description" content="${ogDescription}"/>
+<meta property="og:type" content="website"/>
+${heroUrl ? `<meta property="og:image" content="${escapeHtml(heroUrl)}"/>` : ''}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Josefin+Sans:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  body { margin:0; background:#0d0d0d; color:#f5f3ee; font-family:'Josefin Sans',sans-serif; }
+  .wrap { max-width:560px; margin:0 auto; padding:0 0 60px; }
+  .hero { width:100%; aspect-ratio:16/10; background:#0a0a0a linear-gradient(160deg,#151515,#0a0a0a); background-size:cover; background-position:center; position:relative; overflow:hidden; }
+  .hero::after { content:''; position:absolute; inset:0; background:radial-gradient(ellipse at bottom, rgba(0,0,0,0.75), rgba(0,0,0,0.15) 60%); pointer-events:none; }
+  .hero-map { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:0.22; mix-blend-mode:screen; }
+  .hero-route { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  .waypoint-label { position:absolute; transform:translate(-50%,-50%); font-family:'Josefin Sans',sans-serif; font-weight:600; font-size:13px; letter-spacing:0.03em; text-shadow:0 1px 3px rgba(0,0,0,0.9), 0 0 8px rgba(0,0,0,0.6); white-space:nowrap; }
+  .brand { text-align:center; padding:28px 24px 8px; }
+  .brand-name { font-family:'Cormorant Garamond',serif; font-weight:700; font-size:28px; color:#C9A84C; letter-spacing:0.02em; }
+  .brand-tag { font-size:11px; letter-spacing:0.2em; color:#777; text-transform:uppercase; margin-top:4px; }
+  .content { padding:20px 24px; }
+  .badge { display:inline-block; font-size:11px; letter-spacing:0.1em; text-transform:uppercase; padding:4px 12px; border-radius:20px; color:#fff; margin-bottom:14px; }
+  h1 { font-family:'Cormorant Garamond',serif; font-size:32px; font-weight:700; color:#f5f3ee; margin:0 0 8px; }
+  .meta { font-size:15px; color:#C9A84C; margin-bottom:4px; }
+  .meta.dim { color:#999; }
+  .roads { font-size:13px; color:#C9A84C; margin:14px 0; }
+  .notes { font-size:14px; color:#ccc; font-style:italic; margin:14px 0; line-height:1.6; }
+  .organiser { font-size:13px; color:#999; margin-top:18px; }
+  .going { font-size:13px; color:#2E6DA4; margin-top:4px; }
+  .cta { display:block; text-align:center; background:#C9A84C; color:#0d0d0d; font-weight:600; text-decoration:none; padding:16px; border-radius:10px; margin-top:28px; font-size:15px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero" ${heroUrl ? `style="background-image:url('${escapeHtml(heroUrl)}');"` : ''}>
+      ${mapOverlayHtml}
+    </div>
+    <div class="brand">
+      <div class="brand-name">Chasin<span style="color:#C0392B;">'</span> Curves</div>
+      <div class="brand-tag">Roads, Rivers &amp; Riffs</div>
+    </div>
+    <div class="content">
+      <span class="badge" style="background:${status.color};">${status.label}</span>
+      ${cancelBanner}
+      <h1>${title}</h1>
+      ${dateLabel ? `<div class="meta">${dateLabel}${timeLabel ? ` \u00b7 ${timeLabel}` : ''}</div>` : ''}
+      ${meetingPoint ? `<div class="meta dim">Meeting at ${meetingPoint}</div>` : ''}
+      ${endPoint ? `<div class="meta dim">Finishing at ${endPoint}</div>` : ''}
+      ${vehicle ? `<div class="meta dim">Look for: ${vehicle}</div>` : ''}
+      ${roadsLine ? `<div class="roads">${roadsLine}</div>` : ''}
+      ${notes ? `<div class="notes">${notes}</div>` : ''}
+      <div class="organiser">Hosted by ${organiser}</div>
+      <div class="going">${goingCount} going${maybeCount ? ` \u00b7 ${maybeCount} maybe` : ''}</div>
+      <a class="cta" href="${joinUrl}">View &amp; Join in Chasin' Curves</a>
+    </div>
+  </div>
+</body>
+</html>`;
 }
 
 // ── RESEND EMAIL — verification code ────────────────────────────────────────
@@ -1006,7 +1349,17 @@ export default {
         if (!authedEmail) return err('Not authenticated', 401);
 
         const body = await request.json();
-        const trip = { ...body, createdBy: authedEmail }; // override, matches app.js's own field name
+        // Session 19: optional planned-run fields, all backward compatible —
+        // existing trips (Scott's and Sandy's) simply don't have these and
+        // that's fine, every read site below treats them as optional.
+        const trip = {
+          ...body,
+          createdBy: authedEmail, // override, matches app.js's own field name
+          status: 'open',
+          meetingPoint: body.meetingPoint || null,
+          timezone: body.timezone || null, // IANA string e.g. "Australia/Brisbane" — used by the cron auto-cancel, not built yet
+          maxAttendees: typeof body.maxAttendees === 'number' ? body.maxAttendees : null,
+        };
         const trips = JSON.parse(await env.CURVES_KV.get('trips') || '[]');
         trips.push(trip);
         await env.CURVES_KV.put('trips', JSON.stringify(trips));
@@ -1026,11 +1379,183 @@ export default {
       const id = tripMatch[1];
       const body = await request.json();
       const trips = JSON.parse(await env.CURVES_KV.get('trips') || '[]');
-      const idx = trips.findIndex(t => t.id === id);
+      const idx = trips.findIndex(t => String(t.id) === id);
       if (idx === -1) return err('Trip not found', 404);
       trips[idx] = { ...trips[idx], ...body };
       await env.CURVES_KV.put('trips', JSON.stringify(trips));
       return json({ ok: true });
+    }
+
+    // POST /trips/:id/rsvp — Session 19. Atomic add/update of ONE attendee's
+    // status, read-modify-write entirely server-side. Deliberately separate
+    // from the PUT above (which lets a client overwrite the whole trip,
+    // attendees included) so two people RSVPing at the same moment can never
+    // stomp each other — each request only ever touches its own entry in
+    // the array before the single write-back.
+    const tripRsvpMatch = path.match(/^\/trips\/([^/]+)\/rsvp$/);
+    if (tripRsvpMatch && method === 'POST') {
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+
+      const id = tripRsvpMatch[1];
+      const body = await request.json();
+      const status = body.status;
+      if (!['going', 'maybe', 'not_going'].includes(status)) {
+        return err("status must be 'going', 'maybe', or 'not_going'");
+      }
+
+      const trips = JSON.parse(await env.CURVES_KV.get('trips') || '[]');
+      const idx = trips.findIndex(t => String(t.id) === id);
+      if (idx === -1) return err('Trip not found', 404);
+      const trip = trips[idx];
+
+      if (trip.status === 'cancelled') return err('This run has been cancelled', 409);
+
+      trip.attendees = trip.attendees || [];
+      const attendeeIdx = trip.attendees.findIndex(a => a.memberId === authedEmail);
+
+      if (status === 'not_going') {
+        if (attendeeIdx !== -1) trip.attendees.splice(attendeeIdx, 1);
+      } else {
+        // maxAttendees only blocks a NEW 'going' RSVP, never 'maybe' and
+        // never someone updating their own existing entry.
+        const goingCount = trip.attendees.filter(a => a.status !== 'maybe').length;
+        const isNewGoing = attendeeIdx === -1 && status === 'going';
+        if (isNewGoing && trip.maxAttendees && goingCount >= trip.maxAttendees) {
+          return err('This run is full', 409);
+        }
+
+        const entry = { memberId: authedEmail, vehicleId: body.vehicleId || null, status };
+        if (attendeeIdx === -1) trip.attendees.push(entry);
+        else trip.attendees[attendeeIdx] = { ...trip.attendees[attendeeIdx], ...entry };
+      }
+
+      await env.CURVES_KV.put('trips', JSON.stringify(trips));
+      return json({ ok: true, trip });
+    }
+
+    // POST /trips/:id/cancel — Session 19. Host-only. Requires a reason from
+    // CANCEL_REASONS so a cancelled run carries an honest, categorised
+    // record rather than just vanishing or going silently unconfirmed.
+    const tripCancelMatch = path.match(/^\/trips\/([^/]+)\/cancel$/);
+    if (tripCancelMatch && method === 'POST') {
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+
+      const id = tripCancelMatch[1];
+      const body = await request.json();
+      if (!CANCEL_REASONS.includes(body.reason)) {
+        return err(`reason must be one of: ${CANCEL_REASONS.join(', ')}`);
+      }
+
+      const trips = JSON.parse(await env.CURVES_KV.get('trips') || '[]');
+      const idx = trips.findIndex(t => String(t.id) === id);
+      if (idx === -1) return err('Trip not found', 404);
+      if (trips[idx].createdBy !== authedEmail) return err('Only the host can cancel this run', 403);
+      if (trips[idx].status === 'cancelled') return json({ ok: true, trip: trips[idx] }); // idempotent
+
+      trips[idx].status = 'cancelled';
+      trips[idx].cancelReason = body.reason;
+      trips[idx].cancelledAt = Date.now();
+      await env.CURVES_KV.put('trips', JSON.stringify(trips));
+      return json({ ok: true, trip: trips[idx] });
+    }
+
+    // GET /trips/:id/public — Session 19. No auth — this is the endpoint the
+    // shareable invite/postcard link (Instagram, Facebook) will hit. Returns
+    // only what's safe for an anonymous visitor: never the organiser's or
+    // any attendee's email, matching the same email-hiding principle as
+    // GET /members/:id/public above.
+    // Session 20: pulls the organiser's chosen vehicle (trip.vehicleId, set
+    // at planning time) from their Garage as the hero photo — Scott's call,
+    // and a better one than a new cover-photo upload feature: no new
+    // infrastructure needed, AND it doubles as a real-world "spot the car"
+    // cue for anyone meeting up who's never met the organiser in person.
+    const tripPublicMatch = path.match(/^\/trips\/([^/]+)\/public$/);
+    if (tripPublicMatch && method === 'GET') {
+      const id = tripPublicMatch[1];
+      const trips = JSON.parse(await env.CURVES_KV.get('trips') || '[]');
+      const trip = trips.find(t => String(t.id) === id);
+      if (!trip) return err('Run not found', 404);
+
+      const organiserRaw = await env.CURVES_KV.get(`member:${trip.createdBy}`);
+      const organiser = organiserRaw ? JSON.parse(organiserRaw) : null;
+      const attendees = trip.attendees || [];
+
+      let vehiclePhotoUrl = null, vehicleLabel = null;
+      if (trip.vehicleId) {
+        const garage = parseGarage(await env.CURVES_KV.get(`garage:${trip.createdBy}`));
+        const vehicle = garage.find(v => v.id === trip.vehicleId);
+        if (vehicle) {
+          vehiclePhotoUrl = vehicle.heroPhotoUrl || null;
+          vehicleLabel = `${vehicle.year || ''} ${vehicle.make || ''} ${vehicle.model || ''}`.trim() || null;
+        }
+      }
+
+      return json({
+        id: trip.id,
+        title: trip.title,
+        date: trip.date || null,
+        time: trip.time || null,
+        timezone: trip.timezone || null,
+        meetingPoint: trip.meetingPoint || null,
+        waypoints: trip.waypoints || [],
+        routes: trip.routes || [],
+        notes: trip.notes || null,
+        status: trip.status || 'open',
+        cancelReason: trip.cancelReason || null,
+        organiserDisplayName: organiser?.displayName || 'A Chasin\u2019 Curves member',
+        vehiclePhotoUrl,
+        vehicleLabel,
+        goingCount: attendees.filter(a => a.status !== 'maybe').length,
+        maybeCount: attendees.filter(a => a.status === 'maybe').length,
+        maxAttendees: trip.maxAttendees || null,
+      });
+    }
+
+    // GET /run/:id — Session 20. Server-rendered HTML landing page (NOT the
+    // React app) for the shareable invite link. This has to be real HTML
+    // with the data already in it, not a client-rendered page the SPA fills
+    // in later — Facebook/Instagram's link-preview crawlers generally don't
+    // execute JS, so Open Graph tags only work if they're in the initial
+    // response. Reuses the brand kit (Cormorant Garamond + Josefin Sans,
+    // Midnight/Champagne/Monza/Ocean/Bone) rather than the app's React
+    // components, since this is a standalone unauthenticated page.
+    const runPageMatch = path.match(/^\/run\/([^/]+)$/);
+    if (runPageMatch && method === 'GET') {
+      const id = runPageMatch[1];
+      const trips = JSON.parse(await env.CURVES_KV.get('trips') || '[]');
+      const trip = trips.find(t => String(t.id) === id);
+      if (!trip) return new Response(renderRunNotFoundHtml(), { status: 404, headers: { 'Content-Type': 'text/html' } });
+
+      const organiserRaw = await env.CURVES_KV.get(`member:${trip.createdBy}`);
+      const organiser = organiserRaw ? JSON.parse(organiserRaw) : null;
+      const attendees = trip.attendees || [];
+
+      let vehiclePhotoUrl = null, vehicleLabel = null;
+      if (trip.vehicleId) {
+        const garage = parseGarage(await env.CURVES_KV.get(`garage:${trip.createdBy}`));
+        const vehicle = garage.find(v => v.id === trip.vehicleId);
+        if (vehicle) {
+          vehiclePhotoUrl = vehicle.heroPhotoUrl || null;
+          vehicleLabel = `${vehicle.year || ''} ${vehicle.make || ''} ${vehicle.model || ''}`.trim() || null;
+        }
+      }
+
+      const allRoads = JSON.parse(await env.CURVES_KV.get('roads') || '[]');
+      const roadNames = (trip.routes || []).map(rid => allRoads.find(r => r.id === rid)?.name).filter(Boolean);
+
+      const html = renderRunPageHtml({
+        trip,
+        organiserDisplayName: organiser?.displayName || 'A Chasin\u2019 Curves member',
+        vehiclePhotoUrl,
+        vehicleLabel,
+        roadNames,
+        goingCount: attendees.filter(a => a.status !== 'maybe').length,
+        maybeCount: attendees.filter(a => a.status === 'maybe').length,
+        waypointOverlay: buildWaypointOverlay(trip.waypoints),
+      });
+      return new Response(html, { headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
     }
 
     // ── Reviews & Alerts — Session 17: auth added, same reasoning as
@@ -1176,6 +1701,31 @@ export default {
       const ok = await grantPro(env, email, planId, plan, `comp_${Date.now()}`);
       if (!ok) return err('Member not found — they need to sign up first', 404);
       return json({ ok: true });
+    }
+
+    // ── Admin — delete trip(s) — Session 21. Same shared-adminKey pattern
+    // as grant-pro above. Built for tidying up beta-test trips (accepts a
+    // single tripId or a tripIds array so a whole night's test data can be
+    // cleared in one call). Deliberately does NOT support a "delete
+    // everything" flag — always requires the specific IDs, so a mistyped
+    // request can't wipe every real trip. This is the endpoint rinlojM's
+    // Chasin' Curves adapter calls — a delegate cleans up trips through
+    // rinlojM's own PIN+phrase gate, never touching this admin key or
+    // Chasin' Curves' own login at all.
+    if (path === '/admin/delete-trip' && method === 'POST') {
+      const body = await request.json();
+      if (!env.CURVES_ADMIN_KEY || body.adminKey !== env.CURVES_ADMIN_KEY) {
+        return err('Unauthorised', 403);
+      }
+      const ids = Array.isArray(body.tripIds) ? body.tripIds.map(String)
+        : (body.tripId != null ? [String(body.tripId)] : []);
+      if (ids.length === 0) return err('tripId or tripIds required');
+
+      const trips = JSON.parse(await env.CURVES_KV.get('trips') || '[]');
+      const remaining = trips.filter(t => !ids.includes(String(t.id)));
+      const deletedCount = trips.length - remaining.length;
+      await env.CURVES_KV.put('trips', JSON.stringify(remaining));
+      return json({ ok: true, deletedCount, remainingCount: remaining.length });
     }
 
     return err('Not found', 404);

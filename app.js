@@ -1944,7 +1944,14 @@ const geocodeAddress = async (address) => {
     const feature = data?.features?.[0];
     if (!feature) return null;
     const [lng, lat] = feature.center;
-    return { lat, lng, placeName: feature.place_name };
+    // Session 21: shortName added alongside placeName (never changed —
+    // the privacy fence caller only reads lat/lng anyway, but no reason to
+    // touch its shape). feature.text is Mapbox's own short form ("Landsborough"
+    // vs place_name's "Landsborough, Queensland, Australia") — used for the
+    // run-page waypoint labels, where the full form was both too long
+    // (caused label collisions on tightly-spaced stops) and redundant
+    // (every stop on one run is the same state/country anyway).
+    return { lat, lng, placeName: feature.place_name, shortName: feature.text };
   } catch { return null; }
 };
 
@@ -3201,7 +3208,12 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
     const result = await geocodeAddress(query);
     setGeocoding(false);
     if (!result) { alert(`Couldn't find "${query}" — try a more specific place name.`); return; }
-    setForm(f => ({ ...f, waypoints: [...f.waypoints, { label: result.placeName || query, lat: result.lat, lng: result.lng }] }));
+    // Session 21: shortName ("Landsborough") over placeName ("Landsborough,
+    // Queensland, Australia") — every stop on one run shares the same
+    // state/country anyway, and the full form was colliding with nearby
+    // labels on the run page. Falls back to what they typed if Mapbox's
+    // short form is somehow empty.
+    setForm(f => ({ ...f, waypoints: [...f.waypoints, { label: result.shortName || query, lat: result.lat, lng: result.lng }] }));
     setWaypointInput("");
   };
 
@@ -3939,6 +3951,109 @@ const AddRoadModal = ({ onClose, onAdd, currentUser, initialValues }) => {
 // ─── LOGIN SCREEN ─────────────────────────────────────────────
 // v3.0: No more ScreenshotPrompt/username-suggestions — email IS the
 // recovery mechanism now, so there's nothing to lose and nothing to screenshot.
+// ─── SPLASH SCREEN ────────────────────────────────────────────
+// Session 22: the "cold call" problem Scott flagged — a shared invite link
+// used to drop straight onto the email sign-in form with zero context on
+// what the app even is. This sits in front of LoginScreen for a first-time
+// visitor only (gated by localStorage below, in App) — magazine-style
+// per scvd.app's own editorial look, not a generic app onboarding carousel.
+// runInvite (from /run/:id's CTA — see worker.js Session 22) gets a
+// specific "you're invited to THIS run" treatment; the older generic
+// ?invite= mate-link (see ProfileView's handleInvite) still gets its own,
+// less specific banner. Either, both, or neither can be present.
+const PILLARS = [
+  { emoji: "🚗", title: "Cars", blurb: "Garage builds, spirited drives, and the roads worth chasing them on." },
+  { emoji: "🏍️", title: "Bikes", blurb: "Two wheels welcome — the same roads, the same community." },
+  { emoji: "⛵", title: "Boats", blurb: "Rivers and coastline runs, logged the same way as a road trip." },
+  { emoji: "🎸", title: "Riffs", blurb: "The soundtrack for the drive — guitar content woven through it all." },
+];
+
+const SplashScreen = ({ inviterName, runInvite, onContinue }) => {
+  return (
+    <div style={{ height:"100dvh", overflowY:"auto", background:C.midnight, color:C.bone }}>
+      <div style={{ maxWidth:480, margin:"0 auto", padding:"0 0 40px" }}>
+
+        {/* Hero */}
+        <div style={{ padding:"48px 28px 8px", textAlign:"center" }}>
+          <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:46, fontWeight:700, color:C.champagne, lineHeight:1 }}>
+            Chasin<span style={{ color:C.red }}>'</span> Curves
+          </div>
+          <div style={{ fontSize:11, color:"#555", letterSpacing:"0.22em", textTransform:"uppercase", marginTop:8, marginBottom:28 }}>Roads, Rivers &amp; Riffs</div>
+
+          <div style={{ width:"100%", maxWidth:320, margin:"0 auto 28px", opacity:0.18 }}>
+            <svg viewBox="0 0 340 40" style={{ width:"100%" }}>
+              <path d="M0,20 Q85,5 170,20 Q255,35 340,20" stroke={C.champagne} strokeWidth="1.5" fill="none"/>
+              <path d="M0,28 Q85,13 170,28 Q255,43 340,28" stroke={C.champagne} strokeWidth="0.8" fill="none"/>
+              <path d="M0,12 Q85,-3 170,12 Q255,27 340,12" stroke={C.blue} strokeWidth="0.6" fill="none"/>
+            </svg>
+          </div>
+
+          <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:28, fontWeight:700, color:C.bone, lineHeight:1.25, marginBottom:14 }}>
+            Your next great drive starts with the right company.
+          </div>
+          <div style={{ fontSize:14, color:C.muted, lineHeight:1.7, maxWidth:360, margin:"0 auto" }}>
+            A community of drivers, riders and boat owners sharing the roads and rivers worth chasing — and the garages, playlists and stories that go with them.
+          </div>
+        </div>
+
+        {/* Invite feature — run-specific takes priority over the generic mate-invite */}
+        {runInvite ? (
+          <div style={{ margin:"32px 20px 0", padding:"22px 22px", background:"#131313", border:`1px solid ${C.champagne}`, borderRadius:14 }}>
+            <div style={{ fontSize:10, letterSpacing:"0.18em", textTransform:"uppercase", color:C.champagne, marginBottom:10 }}>🏁 You're Invited</div>
+            <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:24, fontWeight:700, color:C.bone, marginBottom:6 }}>{runInvite.title}</div>
+            {runInvite.host && <div style={{ fontSize:13, color:C.muted }}>Hosted by {runInvite.host}</div>}
+            <div style={{ fontSize:12, color:C.dim, marginTop:12, lineHeight:1.6 }}>Join the Garage below to see the details and RSVP.</div>
+          </div>
+        ) : inviterName ? (
+          <div style={{ margin:"32px 20px 0", padding:"16px 20px", background:C.champagneDim, border:`1px solid ${C.champagne}`, borderRadius:12, fontSize:13, color:C.champagneLight, textAlign:"center" }}>
+            🏁 <strong>{inviterName.slice(0, 40)}</strong> invited you to join
+          </div>
+        ) : null}
+
+        {/* Editorial pillars grid */}
+        <div style={{ margin:"40px 20px 0", display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
+          {PILLARS.map(p => (
+            <div key={p.title} style={{ padding:"18px 16px", background:"#111", border:`1px solid ${C.border}`, borderRadius:12 }}>
+              <div style={{ fontSize:22, marginBottom:8 }}>{p.emoji}</div>
+              <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:18, fontWeight:700, color:C.champagne, marginBottom:4 }}>{p.title}</div>
+              <div style={{ fontSize:12, color:C.dim, lineHeight:1.5 }}>{p.blurb}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* What's inside — feature list, editorial style */}
+        <div style={{ margin:"40px 20px 0" }}>
+          <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:22, fontWeight:700, color:C.bone, marginBottom:16, textAlign:"center" }}>What's inside the garage</div>
+          {[
+            ["Trips & Runs", "Plan a drive, invite the convoy, and see who's actually going."],
+            ["GPS Logbook", "A real compliance trail for club and historic registration — logged automatically."],
+            ["Your Garage", "Show off the build — photos, mods, and the story behind it."],
+            ["Community Roads", "A growing, member-sourced map of the roads actually worth the drive."],
+          ].map(([h, b]) => (
+            <div key={h} style={{ display:"flex", gap:14, marginBottom:18, alignItems:"flex-start" }}>
+              <div style={{ width:6, height:6, borderRadius:"50%", background:C.champagne, marginTop:7, flexShrink:0 }} />
+              <div>
+                <div style={{ fontSize:14, fontWeight:700, color:C.bone, marginBottom:2 }}>{h}</div>
+                <div style={{ fontSize:13, color:C.dim, lineHeight:1.6 }}>{b}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* CTA */}
+        <div style={{ margin:"36px 20px 0" }}>
+          <button
+            onClick={onContinue}
+            style={{ width:"100%", padding:"16px 0", background:`linear-gradient(135deg, ${C.champagne}, ${C.champagneLight})`, border:"none", borderRadius:10, color:C.midnight, fontFamily:"'Josefin Sans', sans-serif", fontSize:14, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.1em", cursor:"pointer" }}>
+            Join the Garage — It's Free →
+          </button>
+          <div style={{ marginTop:16, fontSize:10, color:"#2a2a2a", textAlign:"center", letterSpacing:"0.08em" }}>NO ADS · NO AUTO-RENEWAL · NO NONSENSE</div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const LoginScreen = ({ onRequestCode, onVerifyCode, onResend, step, loading, error, inviterName, inAppBrowser, onDismissInAppWarning }) => {
   // step: "email" | "code"
   const [email, setEmail] = useState("");
@@ -4103,6 +4218,30 @@ const App = () => {
     try { return new URLSearchParams(window.location.search).get("invite") || null; }
     catch { return null; }
   });
+  // Session 22: run-specific invite context from /run/:id's CTA link
+  // (worker.js) — distinct from the generic mate-invite above. Only used
+  // to personalize the splash screen; never trusted for anything (title/
+  // host are just display text a URL param supplied, same trust level as
+  // inviterName above).
+  const [runInvite] = useState(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const id = params.get("run");
+      if (!id) return null;
+      return { id, title: params.get("title") || "A Chasin' Curves run", host: params.get("host") || null };
+    } catch { return null; }
+  });
+  // Session 22: the splash screen is a first-impression fix, not a nag —
+  // once a visitor on this device has seen it (whether they signed up or
+  // not), it stays dismissed. A returning user who signed out shouldn't
+  // see the pitch again.
+  const [showSplash, setShowSplash] = useState(() => {
+    try { return !localStorage.getItem("cc_seen_splash"); } catch { return true; }
+  });
+  const dismissSplash = () => {
+    try { localStorage.setItem("cc_seen_splash", "1"); } catch { /* private browsing etc — fine, just re-shows next time */ }
+    setShowSplash(false);
+  };
   // Session 16c: static for the life of the tab (the UA doesn't change),
   // so a lazy-init read once is enough — no need to watch for changes.
   const [inAppBrowser] = useState(() => detectInAppBrowser());
@@ -4566,6 +4705,7 @@ const App = () => {
         <style>{`@keyframes pulse { 0%,100%{opacity:0.3} 50%{opacity:1} }`}</style>
       </div>
     );
+    if (showSplash) return <SplashScreen inviterName={inviterName} runInvite={runInvite} onContinue={dismissSplash} />;
     return <LoginScreen
       onRequestCode={handleRequestCode}
       onVerifyCode={handleVerifyCode}
