@@ -4274,7 +4274,13 @@ const TOUR_SLIDES = [
 // stationary layer, same reasoning as the caption fix last session —
 // anything meant to stay readable can't live inside the panned/scaled div.
 const TourSlideBox = ({ slide, index, height }) => (
-  <div style={{ position:"relative", height, borderRadius:14, overflow:"hidden", border:`1px solid ${C.border}` }}>
+  // Session 27 fix: explicit width:"100%" here — this div's only content
+  // is absolutely positioned, so it has zero intrinsic width of its own.
+  // Placed inside a flex parent (as it briefly was) with no width set, it
+  // collapses to near-nothing — this is what caused every slide to render
+  // blank. Setting width here directly means that failure mode can't
+  // recur regardless of what kind of container wraps it later.
+  <div style={{ position:"relative", width:"100%", height, borderRadius:14, overflow:"hidden", border:`1px solid ${C.border}` }}>
     <div key={index} style={{ position:"absolute", inset: slide.fit ? 0 : "-8%", animation: slide.fit ? "none" : `${slide.pan} 4.5s linear forwards` }}>
       {slide.photoUrl
         ? <img src={slide.photoUrl} alt="" style={{ position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover" }} />
@@ -4321,7 +4327,7 @@ const TourModal = ({ onClose }) => {
           far more aggressively than on a phone ("blown out" per Scott).
           Keeping the box phone-shaped regardless of window width fixes it
           at the source rather than fighting object-fit per slide. */}
-      <div style={{ flex:1, minHeight:0, maxWidth:480, width:"100%", margin:"0 auto", display:"flex" }}>
+      <div style={{ flex:1, minHeight:0, maxWidth:480, width:"100%", margin:"0 auto" }}>
         <TourSlideBox slide={slide} index={index} height="100%" />
       </div>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:16, maxWidth:480, width:"100%", margin:"16px auto 0" }}>
