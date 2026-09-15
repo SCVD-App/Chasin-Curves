@@ -2283,6 +2283,166 @@ const fitText = (ctx, text, maxWidth, startSize, minSize, fontSpec) => {
   return size;
 };
 
+// Session 29: "Trip Invite" poster — a shareable image for a planned run,
+// sibling to drawTripCard above rather than a rebuild of anything. Reuses
+// the exact same Mercator/bbox helpers (computeBBox, correctBBoxAspect,
+// projectPoint, buildBaseMapUrl) that drive both drawTripCard's route line
+// and the /run/:id page's waypoint overlay — same math, third use. The
+// key visual difference from drawTripCard: the route here is DASHED with
+// named waypoint labels (a planned run, not yet driven) rather than a
+// solid GPS trail, matching what /run/:id already established as "this is
+// an invite, not a record."  Data comes from GET /trips/:id/public — the
+// same no-auth endpoint the /run/:id page itself calls — so this works
+// whether the sharer is the trip's organiser or someone else re-sharing it.
+const drawTripInviteCard = async ({ title, dateLabel, timeLabel, waypoints, vehicleLabel, vehiclePhotoUrl, roadNames, organiserDisplayName, goingCount }) => {
+  await ensureFontsLoaded();
+  const canvas = document.createElement("canvas");
+  canvas.width = CARD_W; canvas.height = CARD_H;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  const cx = CARD_W / 2;
+
+  ctx.fillStyle = C.midnight;
+  ctx.fillRect(0, 0, CARD_W, CARD_H);
+
+  const hasWaypoints = waypoints && waypoints.length >= 2;
+  let mapDrawn = false;
+  let bbox = null;
+
+  // --- Layer 1: vehicle photo, full bleed, sepia-toned (same treatment
+  // as drawTripCard, for visual consistency between "a trip you did" and
+  // "a trip you're planning") ---
+  const heroImg = vehiclePhotoUrl ? await loadImageEl(vehiclePhotoUrl, "vehicle hero photo") : null;
+  if (heroImg) {
+    const scale = Math.max(CARD_W / heroImg.width, CARD_H / heroImg.height);
+    const dw = heroImg.width * scale, dh = heroImg.height * scale;
+    const dx = (CARD_W - dw) / 2, dy = (CARD_H - dh) / 2;
+    ctx.filter = "sepia(35%) grayscale(20%) brightness(0.55) contrast(1.1)";
+    ctx.drawImage(heroImg, dx, dy, dw, dh);
+    ctx.filter = "none";
+    const baseScrim = ctx.createRadialGradient(cx, CARD_H * 0.5, 200, cx, CARD_H * 0.5, 900);
+    baseScrim.addColorStop(0, "rgba(13,13,13,0.35)");
+    baseScrim.addColorStop(1, "rgba(13,13,13,0.82)");
+    ctx.fillStyle = baseScrim;
+    ctx.fillRect(0, 0, CARD_W, CARD_H);
+  }
+
+  // --- Layer 2: base map, faded toward the edges — same masking approach
+  // as drawTripCard, bbox computed from waypoints instead of a GPS trail ---
+  if (hasWaypoints) {
+    bbox = correctBBoxAspect(computeBBox(waypoints), CARD_W / CARD_H);
+    const mapUrl = buildBaseMapUrl(bbox);
+    const mapImg = await loadImageEl(mapUrl, "base map");
+    if (mapImg) {
+      const off = document.createElement("canvas");
+      off.width = CARD_W; off.height = CARD_H;
+      const offCtx = off.getContext("2d");
+      offCtx.drawImage(mapImg, 0, 0, CARD_W, CARD_H);
+      offCtx.globalCompositeOperation = "destination-in";
+      const mask = offCtx.createRadialGradient(cx, CARD_H * 0.5, 150, cx, CARD_H * 0.5, 820);
+      mask.addColorStop(0, "rgba(0,0,0,1)");
+      mask.addColorStop(0.55, "rgba(0,0,0,0.85)");
+      mask.addColorStop(1, "rgba(0,0,0,0)");
+      offCtx.fillStyle = mask;
+      offCtx.fillRect(0, 0, CARD_W, CARD_H);
+      offCtx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = heroImg ? 0.55 : 1;
+      ctx.drawImage(off, 0, 0);
+      ctx.globalAlpha = 1;
+      mapDrawn = true;
+    }
+  }
+
+  if (!heroImg && !mapDrawn) {
+    drawRoadLines(ctx, cx, 330);
+  }
+
+  const shadowText = (text, x, y) => {
+    ctx.shadowColor = "rgba(0,0,0,0.8)";
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 3;
+    ctx.fillText(text, x, y);
+    ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  };
+
+  // --- Layer 3: the planned route, DASHED (not solid — this hasn't been
+  // driven yet), with named waypoint dots and labels. Projected with the
+  // SAME bbox the base map was requested with, so it lines up correctly. ---
+  if (hasWaypoints && bbox) {
+    const pts = waypoints.map(w => projectPoint(w.lng, w.lat, bbox, CARD_W, CARD_H));
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.strokeStyle = C.champagne;
+    ctx.lineWidth = 5;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.setLineDash([14, 14]);
+    ctx.shadowColor = "rgba(0,0,0,0.6)";
+    ctx.shadowBlur = 8;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.shadowColor = "transparent"; ctx.shadowBlur = 0;
+
+    ctx.textAlign = "left";
+    ctx.font = "600 24px 'Josefin Sans'";
+    waypoints.forEach((w, i) => {
+      const [x, y] = pts[i];
+      ctx.fillStyle = i === 0 ? C.champagne : (i === waypoints.length - 1 ? C.red : C.bone);
+      ctx.beginPath();
+      ctx.arc(x, y, 7, 0, Math.PI * 2);
+      ctx.fill();
+      shadowText(w.label, x + 16, y + 8);
+    });
+    ctx.textAlign = "center";
+  }
+
+  ctx.textAlign = "center";
+  const photoOrMapDrawn = mapDrawn || !!heroImg;
+
+  // Wordmark — same treatment as drawTripCard.
+  const wordmarkText = "Chasin’ Curves";
+  const wordmarkSize = fitText(ctx, wordmarkText, CARD_W - 120, 150, 60, s => `700 ${s}px 'Cormorant Garamond'`);
+  const wordmarkY = photoOrMapDrawn ? 70 + wordmarkSize * 0.6 : 450 + wordmarkSize * 0.6;
+  ctx.fillStyle = C.champagne;
+  ctx.font = `700 ${wordmarkSize}px 'Cormorant Garamond'`;
+  shadowText(wordmarkText, cx, wordmarkY);
+  ctx.fillStyle = photoOrMapDrawn ? "rgba(245,243,238,0.75)" : C.dim;
+  ctx.font = "600 16px 'Josefin Sans'";
+  shadowText("R O A D S ,   R I V E R S   &   R I F F S", cx, wordmarkY + wordmarkSize * 0.22 + 12);
+
+  // Trip info — pinned toward the bottom, same darkened zone as
+  // drawTripCard's stats block.
+  const midY = photoOrMapDrawn ? 1000 : 680;
+  const titleSize = fitText(ctx, title, CARD_W - 140, 88, 48, s => `700 ${s}px 'Cormorant Garamond'`);
+  ctx.fillStyle = C.bone;
+  ctx.font = `700 ${titleSize}px 'Cormorant Garamond'`;
+  shadowText(title, cx, midY);
+
+  ctx.fillStyle = C.champagneLight;
+  ctx.font = "600 30px 'Josefin Sans'";
+  shadowText(dateLabel + (timeLabel ? ` · ${timeLabel}` : ""), cx, midY + 55);
+
+  if (hasWaypoints) {
+    ctx.fillStyle = "rgba(245,243,238,0.8)";
+    ctx.font = "400 26px 'Josefin Sans'";
+    shadowText(`Meeting at ${waypoints[0].label}`, cx, midY + 100);
+  }
+
+  if (roadNames && roadNames.length) {
+    ctx.fillStyle = C.champagne;
+    ctx.font = "500 24px 'Josefin Sans'";
+    shadowText(roadNames.join(" • "), cx, midY + 145);
+  }
+
+  ctx.fillStyle = "rgba(245,243,238,0.55)";
+  ctx.font = "400 22px 'Josefin Sans'";
+  const bylineParts = [vehicleLabel, organiserDisplayName ? `Hosted by ${organiserDisplayName}` : null, goingCount ? `${goingCount} going` : null].filter(Boolean);
+  shadowText(bylineParts.join(" · "), cx, 1300);
+
+  return new Promise(resolve => canvas.toBlob(blob => resolve(blob), "image/png", 0.95));
+};
+
 // Session 16n — "Share My Ride": a brag card for a single garage vehicle,
 // built from the same visual language as the trip postcard (full-bleed
 // hero photo, sepia treatment, Chasin' Curves wordmark) but showing
@@ -3254,21 +3414,58 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
     }
   };
 
-  // Session 20: shares the public /run/:id invite link (worker.js — no
-  // auth wall, server-rendered with Open Graph tags for a proper Facebook/
-  // Instagram preview). Same share-then-clipboard-fallback shape as
-  // LiveTripView's handleShare above, for consistency.
+  // Session 29: now builds and shares a real poster image (drawTripInviteCard,
+  // canvas-drawn — see its definition for why this is a sibling of
+  // drawTripCard, not a rebuild) alongside the /run/:id link, same
+  // file+text share pattern as handleShareVehicle above. Falls back to a
+  // link-only share if canShare({files}) isn't supported, then to
+  // clipboard — same three-tier fallback shareTrip already had, just with
+  // an image attached at the top tier now. Fetches GET /trips/:id/public
+  // (same no-auth endpoint /run/:id itself calls) so this works whether
+  // the sharer is the trip's own organiser or someone else re-sharing it.
+  const [sharingTripId, setSharingTripId] = useState(null);
   const shareTrip = async (trip) => {
-    const url = `${API}/run/${trip.id}`;
+    const shareUrl = `${API}/run/${trip.id}`;
+    setSharingTripId(trip.id);
     try {
-      if (navigator.share) {
-        await navigator.share({ title: `${trip.title} — Chasin' Curves`, url });
+      const res = await fetch(`${API}/trips/${trip.id}/public`).then(r => r.json());
+      if (res.error) throw new Error(res.error);
+      const roadNames = (res.routes || []).map(id => roads.find(r => r.id === id)?.name).filter(Boolean);
+      const blob = await drawTripInviteCard({
+        title: res.title,
+        dateLabel: res.date ? fmtDate(res.date) : "",
+        timeLabel: res.time,
+        waypoints: res.waypoints,
+        vehicleLabel: res.vehicleLabel,
+        vehiclePhotoUrl: res.vehiclePhotoUrl,
+        roadNames,
+        organiserDisplayName: res.organiserDisplayName,
+        goingCount: res.goingCount,
+      });
+      if (!blob) throw new Error("card render unavailable");
+      const file = new File([blob], "chasin-curves-invite.png", { type: "image/png" });
+      const shareText = `${res.title} — join us on Chasin' Curves 🏁\n${shareUrl}`;
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: "Chasin' Curves", text: shareText });
+      } else if (navigator.share) {
+        await navigator.share({ title: `${res.title} — Chasin' Curves`, url: shareUrl });
       } else if (navigator.clipboard) {
-        await navigator.clipboard.writeText(url);
+        await navigator.clipboard.writeText(shareUrl);
         alert("Invite link copied — paste it wherever you like.");
       }
     } catch (e) {
-      if (e?.name !== "AbortError") alert("Couldn't share — try again.");
+      if (e?.name !== "AbortError") {
+        console.error("[Chasin' Curves] trip invite poster build failed", e);
+        // Poster generation failing (a bad photo URL, Mapbox hiccup, etc.)
+        // shouldn't mean the person can't share the trip at all — fall
+        // back to the plain link, same as before this session's poster work.
+        try {
+          if (navigator.share) await navigator.share({ title: `${trip.title} — Chasin' Curves`, url: shareUrl });
+          else if (navigator.clipboard) { await navigator.clipboard.writeText(shareUrl); alert("Invite link copied — paste it wherever you like."); }
+        } catch { /* user cancelled the fallback share sheet — fine */ }
+      }
+    } finally {
+      setSharingTripId(null);
     }
   };
 
@@ -3331,7 +3528,7 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
                 <Btn size="sm" variant="blue" onClick={() => joinTrip(trip.id)}>Join this Run</Btn>
               )}
               {isJoined && <Badge color={C.blue}>✓ You're in</Badge>}
-              <Btn size="sm" variant="ghost" onClick={() => shareTrip(trip)}>📤 Share</Btn>
+              <Btn size="sm" variant="ghost" disabled={sharingTripId === trip.id} onClick={() => shareTrip(trip)}>{sharingTripId === trip.id ? "Building..." : "📤 Share"}</Btn>
             </div>
           </div>
         );
