@@ -3996,6 +3996,8 @@ const SplashScreen = ({ inviterName, runInvite, onContinue }) => {
           </div>
         </div>
 
+        <TourSlideshow />
+
         {/* Invite feature — run-specific takes priority over the generic mate-invite */}
         {runInvite ? (
           <div style={{ margin:"32px 20px 0", padding:"22px 22px", background:"#131313", border:`1px solid ${C.champagne}`, borderRadius:14 }}>
@@ -4050,6 +4052,142 @@ const SplashScreen = ({ inviterName, runInvite, onContinue }) => {
           <div style={{ marginTop:16, fontSize:10, color:"#2a2a2a", textAlign:"center", letterSpacing:"0.08em" }}>NO ADS · NO AUTO-RENEWAL · NO NONSENSE</div>
         </div>
       </div>
+    </div>
+  );
+};
+
+// ─── SPLASH TOUR SLIDESHOW ────────────────────────────────────
+// Session 23: Scott's "take a tour" ask — illustrative previews (not live
+// screenshots pulled from real user data) of six core screens, each panning
+// like a Ken Burns effect, alternating direction per slide as specified.
+// Built from the same style tokens as the real screens (GarageView's card
+// treatment, the /run/:id invite card, TripPlanner's form) rather than
+// generic stock mockup chrome, so it reads as a genuine peek rather than
+// marketing filler. CSS-only animation — restarted each slide via the
+// `key` prop forcing a remount, rather than manual JS animation control.
+const TOUR_SLIDES = [
+  {
+    label: "Your Garage",
+    pan: "panLR",
+    render: () => (
+      <div style={{ position:"relative", inset:0, width:"100%", height:"100%", background:"linear-gradient(135deg, #2a1810, #0d0d0d 60%)" }}>
+        <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at 30% 40%, rgba(192,57,43,0.25), transparent 60%)" }} />
+        <div style={{ position:"absolute", bottom:18, left:18, right:18 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+            <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:20, fontWeight:600, color:C.bone }}>2005 BMW Z4</div>
+            <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:C.champagneDim, color:C.champagne }}>★ Primary</span>
+          </div>
+          <div style={{ fontSize:11, color:C.muted }}>E85 3.0i Roadster · Imola Red</div>
+        </div>
+      </div>
+    ),
+  },
+  {
+    label: "Trip Postcards",
+    pan: "panRL",
+    render: () => (
+      <div style={{ position:"relative", inset:0, width:"100%", height:"100%", background:"linear-gradient(200deg, #1a2530, #0d0d0d 65%)" }}>
+        <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at 70% 30%, rgba(46,109,164,0.28), transparent 60%)" }} />
+        <div style={{ position:"absolute", top:16, left:18, fontSize:10, letterSpacing:"0.15em", textTransform:"uppercase", color:C.champagne }}>Kenilworth–Maleny Road</div>
+        <div style={{ position:"absolute", bottom:18, left:18, right:18 }}>
+          <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:19, fontWeight:600, color:C.bone, marginBottom:4 }}>Sunday Cruise</div>
+          <div style={{ fontSize:11, color:C.muted }}>128km logged · 2hr 40min</div>
+        </div>
+      </div>
+    ),
+  },
+  {
+    label: "Trip Invites",
+    pan: "panBT",
+    render: () => (
+      <div style={{ position:"relative", inset:0, width:"100%", height:"100%", background:"#111" }}>
+        <div style={{ position:"absolute", inset:0, background:"linear-gradient(160deg, #151515, #0a0a0a)" }} />
+        <div style={{ position:"absolute", top:14, left:18 }}>
+          <span style={{ fontSize:10, letterSpacing:"0.1em", textTransform:"uppercase", padding:"3px 10px", borderRadius:12, background:C.blue, color:"#fff" }}>Confirmed</span>
+        </div>
+        <div style={{ position:"absolute", bottom:18, left:18, right:18 }}>
+          <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:19, fontWeight:700, color:C.bone, marginBottom:4 }}>Friday Donut Run</div>
+          <div style={{ fontSize:11, color:C.champagne, marginBottom:2 }}>Friday · 0930</div>
+          <div style={{ fontSize:11, color:C.dim }}>3 going</div>
+        </div>
+      </div>
+    ),
+  },
+  {
+    label: "Plan a Run",
+    pan: "panTB",
+    render: () => (
+      <div style={{ position:"relative", inset:0, width:"100%", height:"100%", background:"#0d0d0d", padding:20 }}>
+        <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:6 }}>Run Name</div>
+        <div style={{ height:30, border:`1px solid ${C.border}`, borderRadius:6, marginBottom:14 }} />
+        <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:6 }}>Select Roads</div>
+        <div style={{ display:"flex", gap:6, marginBottom:14 }}>
+          <span style={{ fontSize:10, padding:"5px 10px", borderRadius:14, border:`1px solid ${C.champagne}`, color:C.champagne }}>✓ Kenilworth Rd</span>
+          <span style={{ fontSize:10, padding:"5px 10px", borderRadius:14, border:`1px solid ${C.border}`, color:C.dim }}>Peachester Rd</span>
+        </div>
+        <div style={{ height:34, borderRadius:8, background:`linear-gradient(135deg, ${C.champagne}, ${C.champagneLight})`, opacity:0.85 }} />
+      </div>
+    ),
+  },
+  {
+    label: "GPS Logbook",
+    pan: "panLR",
+    render: () => (
+      <div style={{ position:"relative", inset:0, width:"100%", height:"100%", background:"#0d0d0d", padding:20 }}>
+        {[["Sat 12 Sept", "84km"], ["Sun 13 Sept", "142km"], ["Wed 16 Sept", "61km"]].map(([d, k]) => (
+          <div key={d} style={{ display:"flex", justifyContent:"space-between", padding:"10px 0", borderBottom:`1px solid ${C.border}` }}>
+            <span style={{ fontSize:12, color:C.bone }}>{d}</span>
+            <span style={{ fontSize:12, color:C.champagne }}>{k}</span>
+          </div>
+        ))}
+        <div style={{ marginTop:10, fontSize:10, color:C.dim }}>Compliance-ready trail — logged automatically</div>
+      </div>
+    ),
+  },
+  {
+    label: "Community Roads",
+    pan: "panRL",
+    render: () => (
+      <div style={{ position:"relative", inset:0, width:"100%", height:"100%", background:"#0a0f12" }}>
+        <svg viewBox="0 0 340 220" style={{ position:"absolute", inset:0, width:"100%", height:"100%" }}>
+          <path d="M-10,180 Q90,140 160,150 Q230,160 350,60" stroke={C.champagne} strokeWidth="2" fill="none" opacity="0.6"/>
+          <circle cx="90" cy="150" r="4" fill={C.red}/>
+          <circle cx="230" cy="90" r="4" fill={C.blue}/>
+        </svg>
+        <div style={{ position:"absolute", bottom:18, left:18, fontSize:12, color:C.champagne }}>Bruxner Highway — Gibraltar Range</div>
+      </div>
+    ),
+  },
+];
+
+const TourSlideshow = () => {
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setIndex(i => (i + 1) % TOUR_SLIDES.length), 4500);
+    return () => clearInterval(t);
+  }, []);
+  const slide = TOUR_SLIDES[index];
+  return (
+    <div style={{ margin:"32px 20px 0" }}>
+      <div style={{ position:"relative", height:220, borderRadius:14, overflow:"hidden", border:`1px solid ${C.border}` }}>
+        <div key={index} style={{ position:"absolute", inset:"-8%", animation:`${slide.pan} 4.5s linear forwards` }}>
+          {slide.render()}
+        </div>
+      </div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:10 }}>
+        <div style={{ fontSize:12, color:C.muted }}>{slide.label}</div>
+        <div style={{ display:"flex", gap:6 }}>
+          {TOUR_SLIDES.map((s, i) => (
+            <div key={i} onClick={() => setIndex(i)} style={{ width:6, height:6, borderRadius:"50%", background: i === index ? C.champagne : C.faint, cursor:"pointer" }} />
+          ))}
+        </div>
+      </div>
+      <style>{`
+        @keyframes panLR { from { transform: translateX(0) scale(1.12); } to { transform: translateX(-6%) scale(1.12); } }
+        @keyframes panRL { from { transform: translateX(-6%) scale(1.12); } to { transform: translateX(0) scale(1.12); } }
+        @keyframes panBT { from { transform: translateY(0) scale(1.12); } to { transform: translateY(-6%) scale(1.12); } }
+        @keyframes panTB { from { transform: translateY(-6%) scale(1.12); } to { transform: translateY(0) scale(1.12); } }
+      `}</style>
     </div>
   );
 };
