@@ -4090,9 +4090,21 @@ const SplashScreen = ({ inviterName, runInvite, onContinue }) => {
 // overlay pinned to the bottom that never moves. (3) `photoUrl` — the
 // Garage and Trip Invites slides now use a real, already-hosted photo of
 // Scott's Z4 (pulled from R2 the same way /run/:id already does) instead
-// of a gradient, per the "looks bare" feedback — the other four are still
-// gradient placeholders pending a couple more real photo URLs.
+// of a gradient, per the "looks bare" feedback. (4) Added a 7th slide,
+// "Your Music, Too", using a real photo of Scott's actual guitar garage
+// entry — the Riffs pillar had no tour slide of its own before this, only
+// a small icon block further down the splash page. Postcards, Plan a Run,
+// GPS Logbook and Community Roads are still gradient/mockup placeholders
+// pending road or trip-themed photo URLs (guitar photos don't fit those
+// captions). Two more real guitar photos (SCOTT_GUITAR_PHOTO_2/3) are
+// defined below but not yet used anywhere — held in reserve.
 const SCOTT_Z4_PHOTO = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/scott_cc_v1781786987231_1781787046541.jpg";
+// Session 24: three real photos of Scott's actual "1986 My Guitars Tele's
+// and Strat's" garage entry — gives the Riffs pillar (previously covered
+// only by a small icon block, no tour slide of its own) real content.
+const SCOTT_GUITAR_PHOTO_1 = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/emblen_scott_gmail_com_v1789438741327_1789439007278.jpg";
+const SCOTT_GUITAR_PHOTO_2 = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/emblen_scott_gmail_com_v1789438741327_1789439025769.jpg";
+const SCOTT_GUITAR_PHOTO_3 = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/emblen_scott_gmail_com_v1789438741327_1789439037981.jpg";
 
 const TOUR_SLIDES = [
   {
@@ -4103,6 +4115,13 @@ const TOUR_SLIDES = [
       <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at 30% 40%, rgba(192,57,43,0.25), transparent 60%)" }} />
     </div>,
     caption: { title: "2005 BMW Z4", subtitle: "E85 3.0i Roadster · Imola Red", badge: "★ Primary" },
+  },
+  {
+    meta: "Your Music, Too",
+    pan: "panTB",
+    photoUrl: SCOTT_GUITAR_PHOTO_1,
+    bg: () => <div style={{ position:"absolute", inset:0, background:"#0d0d0d" }} />,
+    caption: { title: "1986 My Guitars Tele's and Strat's", subtitle: "Telecaster, Stratocaster, Custom Build · Multiple", eyebrow: "🎸 Riffs" },
   },
   {
     meta: "Trip Postcards",
