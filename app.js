@@ -1417,6 +1417,13 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onRefreshPoints, onBack, onR
   const [saving, setSaving] = useState(false);
   const [sharingCard, setSharingCard] = useState(false);
   const [cardPreview, setCardPreview] = useState(null); // { url } — fallback when Web Share can't take files
+  // Season's Greetings card: xmas is null while closed, or { greeting, message } while the modal is open.
+  const [xmas, setXmas] = useState(null);
+  const [xmasPreview, setXmasPreview] = useState(null);   // { url, blob }
+  const [xmasBuilding, setXmasBuilding] = useState(false);
+  const [xmasFailed, setXmasFailed] = useState(false);
+  const [xmasSharing, setXmasSharing] = useState(false);
+  const xmasHeroRef = useRef({ url: null, img: null });    // hero photo cached so typing a message doesn't refetch it
   const photoInputRef = useRef(null);
 
   // FIX 2: heroPhoto is a photoId string — find by id, not index
@@ -1454,6 +1461,72 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onRefreshPoints, onBack, onR
       }
     } finally {
       setSharingCard(false);
+    }
+  };
+
+  const openXmas = () => { setXmasFailed(false); setXmas({ greeting: defaultXmasGreeting(), message: "" }); };
+  const closeXmas = () => {
+    setXmas(null);
+    setXmasPreview(prev => { if (prev?.url) URL.revokeObjectURL(prev.url); return null; });
+  };
+
+  // Rebuilds the preview a moment after the greeting or message changes.
+  useEffect(() => {
+    if (!xmas) return;
+    let cancelled = false;
+    setXmasBuilding(true);
+    setXmasFailed(false);
+    const timer = setTimeout(async () => {
+      try {
+        const heroUrl = getHeroPhoto();
+        if (heroUrl && xmasHeroRef.current.url !== heroUrl) {
+          xmasHeroRef.current = { url: heroUrl, img: await loadImageEl(heroUrl, "vehicle hero photo") };
+        }
+        const blob = await drawChristmasCard({
+          vehicle, member, heroImg: heroUrl ? xmasHeroRef.current.img : null,
+          greeting: xmas.greeting, message: xmas.message,
+        });
+        if (cancelled) return;
+        if (!blob) throw new Error("card render unavailable");
+        setXmasPreview(prev => { if (prev?.url) URL.revokeObjectURL(prev.url); return { url: URL.createObjectURL(blob), blob }; });
+      } catch (e) {
+        if (!cancelled) { console.error("[Chasin' Curves] greetings card build failed", e); setXmasFailed(true); }
+      } finally {
+        if (!cancelled) setXmasBuilding(false);
+      }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [xmas?.greeting, xmas?.message, !!xmas]);
+
+  const xmasFile = xmasPreview ? new File([xmasPreview.blob], "chasin-curves-greetings.png", { type: "image/png" }) : null;
+  const canShareXmas = !!(xmasFile && navigator.canShare && navigator.canShare({ files: [xmasFile] }));
+
+  // Shares the card with the ?invite= link ("Invite a Mate" uses the same one), so every card
+  // carries the app with it. Browsers that can't share files download the card instead and
+  // copy the message so it can be pasted alongside it.
+  const shareXmas = async () => {
+    if (!xmasPreview?.blob || !xmasFile) return;
+    setXmasSharing(true);
+    try {
+      const inviteUrl = `${window.location.origin}${window.location.pathname}?invite=${encodeURIComponent(member.displayName || "")}`;
+      const rideName = `${vehicle.year || ""} ${vehicle.make || ""} ${vehicle.model || ""}`.replace(/\s+/g, " ").trim();
+      const text = `${xmas.greeting} from ${member.displayName || "a mate"} and their ${rideName} 🎄\nJoin us on Chasin' Curves: ${inviteUrl}`;
+      if (canShareXmas) {
+        await navigator.share({ files: [xmasFile], title: "Chasin' Curves", text });
+      } else {
+        const a = document.createElement("a");
+        a.href = xmasPreview.url; a.download = "chasin-curves-greetings.png";
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        try { await navigator.clipboard.writeText(text); alert("Card downloaded, and the message with your invite link is copied. Paste it wherever you post the card."); }
+        catch { alert("Card downloaded. Add this invite link when you post it:\n" + inviteUrl); }
+      }
+    } catch (e) {
+      if (e?.name !== "AbortError") {
+        console.error("[Chasin' Curves] greetings card share failed", e);
+        alert("Couldn't share the card. Try again, or download it from the preview by pressing and holding the image.");
+      }
+    } finally {
+      setXmasSharing(false);
     }
   };
 
@@ -1546,6 +1619,11 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onRefreshPoints, onBack, onR
         <button onClick={handleShareVehicle} disabled={sharingCard} style={{ position: "absolute", top: 14, right: 16, background: "rgba(0,0,0,0.5)", border: "1px solid " + C.border2, borderRadius: 20, padding: "6px 14px", color: C.champagne, fontFamily: "Josefin Sans, sans-serif", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.08em", cursor: sharingCard ? "default" : "pointer", opacity: sharingCard ? 0.6 : 1, display: "flex", alignItems: "center", gap: 6 }}>
           {sharingCard ? "Building…" : "📤 Share"}
         </button>
+        {isXmasSeason() && (
+          <button onClick={openXmas} style={{ position: "absolute", top: 52, right: 16, background: "rgba(0,0,0,0.5)", border: "1px solid " + C.red, borderRadius: 20, padding: "6px 14px", color: C.bone, fontFamily: "Josefin Sans, sans-serif", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+            🎄 Greetings
+          </button>
+        )}
         <div style={{ position: "absolute", bottom: 18, left: 20, right: 20 }}>
           <div style={{ fontFamily: "Cormorant Garamond, serif", fontSize: 26, fontWeight: 700, color: "#fff", lineHeight: 1.1, textShadow: "0 2px 8px rgba(0,0,0,0.8)" }}>
             {vehicle.year} {vehicle.make} {vehicle.model}
@@ -1554,6 +1632,36 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onRefreshPoints, onBack, onR
           {vehicle.primary && <span style={{ fontSize: 10, color: C.champagne, textTransform: "uppercase", letterSpacing: "0.1em" }}>★ Primary Ride</span>}
         </div>
       </div>
+
+      {xmas && (
+        <Modal title="Season’s Greetings" subtitle="A card from you and your ride" onClose={closeXmas}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+            {XMAS_GREETINGS.map(g => (
+              <button key={g} onClick={() => setXmas(x => ({ ...x, greeting: g }))}
+                style={{ padding: "6px 14px", borderRadius: 20, cursor: "pointer", fontFamily: "Josefin Sans, sans-serif", fontSize: 12,
+                         border: `1px solid ${xmas.greeting === g ? C.champagne : C.border2}`,
+                         background: xmas.greeting === g ? C.champagneDim : "none",
+                         color: xmas.greeting === g ? C.champagne : C.muted }}>
+                {g}
+              </button>
+            ))}
+          </div>
+          <Input label="Add a line (optional)" value={xmas.message} onChange={v => setXmas(x => ({ ...x, message: v.slice(0, 80) }))} placeholder="Wishing you miles of open road" />
+          <div style={{ textAlign: "center", marginBottom: 14, minHeight: 120 }}>
+            {xmasPreview
+              ? <img src={xmasPreview.url} alt="Your Season’s Greetings card" style={{ maxWidth: "100%", maxHeight: "46vh", borderRadius: 10, border: `1px solid ${C.border}`, opacity: xmasBuilding ? 0.5 : 1, transition: "opacity 0.2s" }} />
+              : <div style={{ fontSize: 12, color: xmasFailed ? C.red : C.dim, padding: "40px 0" }}>
+                  {xmasFailed ? "Couldn't build the card. Check your connection and try again." : "Building your card…"}
+                </div>}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn variant="ghost" onClick={closeXmas} style={{ flex: 1 }}>Close</Btn>
+            <Btn onClick={shareXmas} disabled={!xmasPreview || xmasBuilding || xmasSharing} style={{ flex: 2 }}>
+              {xmasSharing ? "Sending…" : canShareXmas ? "Share card" : "Download card"}
+            </Btn>
+          </div>
+        </Modal>
+      )}
 
       {cardPreview && (
         <div style={{ padding: "16px 20px", textAlign: "center", borderBottom: "1px solid " + C.border }}>
@@ -2603,6 +2711,352 @@ const drawVehicleCard = async ({ vehicle, member, heroUrl }) => {
 
   return new Promise(resolve => canvas.toBlob(blob => resolve(blob), "image/png", 0.95));
 };
+// ─── SEASON'S GREETINGS CARD ─────────────────────────────────
+// "Merry Christmas from Scott and their 2005 BMW Z4": the vehicle's hero photo
+// with the brand's gold dotted road, a tinsel garland, mistletoe and candy
+// canes, all drawn by hand on canvas in the same way as drawVehicleCard and
+// drawTripInviteCard. Shared through the OS share sheet with the same
+// ?invite= link "Invite a Mate" uses, so every card carries the app with it.
+// Everything festive is generated from a seeded random source (the vehicle's
+// id), so each vehicle gets its own slightly different tinsel but the same
+// vehicle always gets the same card.
+const XMAS_GREETINGS = ["Merry Christmas", "Happy Holidays", "Season\u2019s Greetings", "Happy New Year"];
+const XMAS_GREEN = "#2E6B3F", XMAS_GREEN_LIGHT = "#4C9A62", XMAS_GREEN_DARK = "#1E4A2B";
+
+// After Boxing Day the default greeting flips to Happy New Year.
+const defaultXmasGreeting = () => {
+  const d = new Date();
+  return (d.getMonth() === 11 && d.getDate() >= 27) || (d.getMonth() === 0 && d.getDate() <= 6) ? XMAS_GREETINGS[3] : XMAS_GREETINGS[0];
+};
+
+// Card shows from 1 Dec to 6 Jan. Add ?xmas=1 to the app URL to try it any time of year.
+const isXmasSeason = () => {
+  try {
+    if (new URLSearchParams(window.location.search).get("xmas") === "1") return true;
+  } catch { /* no window.location: fall through to the date check */ }
+  const d = new Date();
+  return d.getMonth() === 11 || (d.getMonth() === 0 && d.getDate() <= 6);
+};
+
+const seededRandom = (seedStr) => {
+  let h = 1779033703 ^ String(seedStr).length;
+  for (let i = 0; i < String(seedStr).length; i++) {
+    h = Math.imul(h ^ String(seedStr).charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  let a = h >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+// A strand of tinsel along a quadratic curve: a gold core with short glittering
+// bristles either side, plus a few bright glints.
+const drawTinselSwag = (ctx, ax, ay, cx, cy, bx, by, rng) => {
+  const pt = t => ({ x: (1 - t) * (1 - t) * ax + 2 * (1 - t) * t * cx + t * t * bx, y: (1 - t) * (1 - t) * ay + 2 * (1 - t) * t * cy + t * t * by });
+  const tan = t => ({ x: 2 * (1 - t) * (cx - ax) + 2 * t * (bx - cx), y: 2 * (1 - t) * (cy - ay) + 2 * t * (by - cy) });
+  const cols = [C.champagneLight, C.champagne, "#F0E2B0", "#FFF6D6", "#B8912F", C.bone];
+  ctx.save();
+  ctx.lineCap = "round";
+  const steps = 300;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps, p = pt(t), d = tan(t), len = Math.hypot(d.x, d.y) || 1;
+    const tx = d.x / len, ty = d.y / len, nx = -ty, ny = tx;
+    for (let side = -1; side <= 1; side += 2) {
+      const L = 14 + rng() * 22, slant = (rng() - 0.5) * 0.9;
+      const ex = p.x + (nx * Math.cos(slant) + tx * Math.sin(slant)) * L * side;
+      const ey = p.y + (ny * Math.cos(slant) + ty * Math.sin(slant)) * L * side;
+      ctx.strokeStyle = cols[Math.floor(rng() * cols.length)];
+      ctx.globalAlpha = 0.5 + rng() * 0.45;
+      ctx.lineWidth = 1.4 + rng() * 1.8;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(ex, ey); ctx.stroke();
+    }
+  }
+  // twisted core
+  ctx.globalAlpha = 1;
+  ctx.shadowColor = "rgba(0,0,0,0.45)"; ctx.shadowBlur = 8; ctx.shadowOffsetY = 4;
+  ctx.strokeStyle = C.champagne; ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.moveTo(ax, ay); ctx.quadraticCurveTo(cx, cy, bx, by); ctx.stroke();
+  ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  ctx.strokeStyle = "#FFF6D6"; ctx.globalAlpha = 0.6; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(ax, ay - 1); ctx.quadraticCurveTo(cx, cy - 1, bx, by - 1); ctx.stroke();
+  // glints
+  ctx.globalAlpha = 0.95; ctx.fillStyle = "#FFFFFF";
+  for (let g = 0; g < 16; g++) {
+    const p = pt(0.04 + rng() * 0.92), r = 1.6 + rng() * 2.4;
+    ctx.beginPath(); ctx.arc(p.x + (rng() - 0.5) * 22, p.y + (rng() - 0.5) * 22, r, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+};
+
+const drawBauble = (ctx, x, y, r) => {
+  ctx.save();
+  ctx.shadowColor = "rgba(0,0,0,0.5)"; ctx.shadowBlur = 10; ctx.shadowOffsetY = 5;
+  const g = ctx.createRadialGradient(x - r * 0.35, y - r * 0.4, r * 0.1, x, y, r);
+  g.addColorStop(0, "#E86A5B"); g.addColorStop(0.55, C.red); g.addColorStop(1, "#7E231A");
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  ctx.fillStyle = C.champagne; ctx.fillRect(x - r * 0.28, y - r - r * 0.22, r * 0.56, r * 0.3);
+  ctx.strokeStyle = C.champagne; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y - r - r * 0.42, r * 0.16, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = "rgba(255,255,255,0.7)"; ctx.beginPath(); ctx.ellipse(x - r * 0.35, y - r * 0.4, r * 0.18, r * 0.11, -0.7, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+};
+
+const drawBow = (ctx, x, y, s) => {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  ctx.shadowColor = "rgba(0,0,0,0.45)"; ctx.shadowBlur = 8; ctx.shadowOffsetY = 4;
+  const dark = "#7E231A";
+  const tail = (dir) => {
+    ctx.fillStyle = dark;
+    ctx.beginPath(); ctx.moveTo(0, 6);
+    ctx.quadraticCurveTo(dir * 12, 34, dir * 28, 62); ctx.lineTo(dir * 14, 58); ctx.lineTo(dir * 8, 70);
+    ctx.quadraticCurveTo(dir * 2, 34, 0, 6); ctx.closePath(); ctx.fill();
+  };
+  tail(-1); tail(1);
+  const loop = (dir) => {
+    const g = ctx.createLinearGradient(0, -30, dir * 60, 20);
+    g.addColorStop(0, "#E0574A"); g.addColorStop(1, C.red);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.moveTo(0, 0);
+    ctx.bezierCurveTo(dir * 20, -46, dir * 66, -44, dir * 62, -6);
+    ctx.bezierCurveTo(dir * 60, 26, dir * 20, 24, 0, 0); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.22)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(dir * 12, -8); ctx.bezierCurveTo(dir * 26, -26, dir * 44, -26, dir * 54, -12); ctx.stroke();
+  };
+  loop(-1); loop(1);
+  ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  const kg = ctx.createRadialGradient(-3, -4, 1, 0, 0, 13);
+  kg.addColorStop(0, "#E0574A"); kg.addColorStop(1, dark);
+  ctx.fillStyle = kg; ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+};
+
+// A mistletoe sprig, stem running along +x from the origin (where the bow sits).
+// mirror flips it horizontally so a pair can frame the card.
+const drawMistletoe = (ctx, x, y, angle, scale, mirror, rng) => {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(mirror ? -angle : angle); ctx.scale(mirror ? -scale : scale, scale);
+  ctx.lineCap = "round";
+  const leaf = (lx, ly, ang, len) => {
+    ctx.save(); ctx.translate(lx, ly); ctx.rotate(ang);
+    ctx.shadowColor = "rgba(0,0,0,0.4)"; ctx.shadowBlur = 6; ctx.shadowOffsetY = 3;
+    const g = ctx.createLinearGradient(0, -len * 0.3, len, len * 0.3);
+    g.addColorStop(0, XMAS_GREEN_DARK); g.addColorStop(0.5, XMAS_GREEN); g.addColorStop(1, XMAS_GREEN_LIGHT);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.moveTo(0, 0);
+    ctx.bezierCurveTo(len * 0.2, -len * 0.3, len * 0.78, -len * 0.34, len, 0);
+    ctx.bezierCurveTo(len * 0.78, len * 0.34, len * 0.2, len * 0.3, 0, 0); ctx.closePath(); ctx.fill();
+    ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+    ctx.strokeStyle = "rgba(200,235,205,0.45)"; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(len * 0.06, 0); ctx.lineTo(len * 0.9, 0); ctx.stroke();
+    ctx.restore();
+  };
+  const berry = (bx, by, r) => {
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,0.4)"; ctx.shadowBlur = 5; ctx.shadowOffsetY = 2;
+    const g = ctx.createRadialGradient(bx - r * 0.35, by - r * 0.35, r * 0.1, bx, by, r);
+    g.addColorStop(0, "#FFFFFF"); g.addColorStop(0.7, "#EDE9DD"); g.addColorStop(1, "#BDB7A2");
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(bx, by, r, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  };
+  const stem = (x0, y0, x1, y1, w) => {
+    ctx.strokeStyle = "#5C4A2A"; ctx.lineWidth = w;
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  };
+  const branch = (bx, by, dirAng, len, depth) => {
+    const ex = bx + Math.cos(dirAng) * len, ey = by + Math.sin(dirAng) * len;
+    stem(bx, by, ex, ey, depth ? 4 : 5);
+    const spread = 0.62;
+    leaf(ex, ey, dirAng - spread, 96 + rng() * 14);
+    leaf(ex, ey, dirAng + spread, 96 + rng() * 14);
+    leaf(ex, ey, dirAng + (rng() - 0.5) * 0.3, 70 + rng() * 10);
+    berry(ex - 5, ey - 4, 10); berry(ex + 8, ey + 3, 10); berry(ex + 1, ey + 11, 9);
+  };
+  // main stem and three forks
+  stem(0, 0, 210, 6, 6);
+  branch(60, 1, -0.55, 74, 0);
+  branch(60, 1, 0.55, 74, 0);
+  branch(130, 3, -0.4, 66, 1);
+  branch(130, 3, 0.62, 66, 1);
+  branch(210, 6, 0, 30, 1);
+  ctx.restore();
+};
+
+// Candy cane standing on the bottom edge. hook = +1 curls right, -1 curls left.
+const drawCandyCane = (ctx, baseX, baseY, height, hook, tilt) => {
+  const W = 34, R = 50;
+  const y1 = baseY - height + R; // top of the straight section
+  const pts = [];
+  for (let y = baseY + 20; y >= y1; y -= 2) pts.push({ x: baseX, y });
+  const cxc = baseX + hook * R;
+  for (let a = 0; a <= 1.02; a += 0.01) {
+    const th = hook > 0 ? Math.PI + a * Math.PI : -a * Math.PI;
+    pts.push({ x: cxc + R * Math.cos(th), y: y1 + R * Math.sin(th) });
+  }
+  // arclength + normals
+  const cum = [0], nrm = [];
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
+    const dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy) || 1;
+    nrm.push({ x: -dy / l, y: dx / l });
+  }
+  const at = (s) => {
+    let i = 1; while (i < pts.length - 1 && cum[i] < s) i++;
+    const f = Math.max(0, Math.min(1, (s - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1)));
+    return { x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * f, y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * f,
+             nx: nrm[i - 1].x + (nrm[i].x - nrm[i - 1].x) * f, ny: nrm[i - 1].y + (nrm[i].y - nrm[i - 1].y) * f };
+  };
+  const total = cum[cum.length - 1];
+  const path = () => { ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y); for (const p of pts) ctx.lineTo(p.x, p.y); };
+
+  ctx.save();
+  ctx.translate(baseX, baseY); ctx.rotate(tilt); ctx.translate(-baseX, -baseY);
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.shadowColor = "rgba(0,0,0,0.5)"; ctx.shadowBlur = 12; ctx.shadowOffsetY = 6;
+  path(); ctx.strokeStyle = "#2a0d09"; ctx.lineWidth = W + 5; ctx.stroke();
+  ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  path(); ctx.strokeStyle = C.bone; ctx.lineWidth = W; ctx.stroke();
+  // slanted red stripes following the curve
+  const period = 46, stripe = 21, slant = W * 0.95, h = W / 2;
+  ctx.fillStyle = C.red;
+  for (let s0 = -period; s0 < total; s0 += period) {
+    const s1 = s0 + stripe;
+    const poly = [];
+    for (let s = s0; s <= s1; s += 3) { const p = at(Math.max(0, Math.min(total, s))); poly.push({ x: p.x + p.nx * h, y: p.y + p.ny * h }); }
+    for (let s = s1 + slant; s >= s0 + slant; s -= 3) { const p = at(Math.max(0, Math.min(total, s))); poly.push({ x: p.x - p.nx * h, y: p.y - p.ny * h }); }
+    ctx.beginPath(); poly.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.closePath();
+    ctx.fill();
+  }
+  // soft gloss along one edge
+  ctx.strokeStyle = "rgba(255,255,255,0.28)"; ctx.lineWidth = 5;
+  ctx.beginPath();
+  pts.forEach((p, i) => { const q = at(cum[i]); const gx = q.x + q.nx * (-h * 0.42), gy = q.y + q.ny * (-h * 0.42); i ? ctx.lineTo(gx, gy) : ctx.moveTo(gx, gy); });
+  ctx.stroke();
+  ctx.restore();
+};
+
+const drawChristmasCard = async ({ vehicle, member, heroUrl, heroImg: preloaded, greeting, message }) => {
+  await ensureFontsLoaded();
+  const canvas = document.createElement("canvas");
+  canvas.width = CARD_W; canvas.height = CARD_H;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  const cx = CARD_W / 2;
+  const rng = seededRandom(`${vehicle.id || vehicle.make}-xmas`);
+
+  ctx.fillStyle = C.midnight;
+  ctx.fillRect(0, 0, CARD_W, CARD_H);
+
+  // 1. hero photo, a touch warmer and lighter than the postcard so it feels festive
+  const heroImg = preloaded || (heroUrl ? await loadImageEl(heroUrl, "vehicle hero photo") : null);
+  if (heroImg) {
+    const scale = Math.max(CARD_W / heroImg.width, CARD_H / heroImg.height);
+    const dw = heroImg.width * scale, dh = heroImg.height * scale;
+    ctx.filter = "sepia(28%) grayscale(10%) brightness(0.66) contrast(1.1)";
+    ctx.drawImage(heroImg, (CARD_W - dw) / 2, (CARD_H - dh) / 2, dw, dh);
+    ctx.filter = "none";
+  } else {
+    const glow = ctx.createRadialGradient(cx, 520, 40, cx, 520, 760);
+    glow.addColorStop(0, "rgba(201,168,76,0.20)"); glow.addColorStop(1, "rgba(13,13,13,0)");
+    ctx.fillStyle = glow; ctx.fillRect(0, 0, CARD_W, CARD_H);
+    drawRoadLines(ctx, cx, 560);
+    // no photo: a light dusting of snow so the card still feels finished
+    ctx.fillStyle = C.bone;
+    for (let i = 0; i < 110; i++) {
+      ctx.globalAlpha = 0.12 + rng() * 0.5;
+      ctx.beginPath(); ctx.arc(60 + rng() * (CARD_W - 120), 300 + rng() * 560, 1.5 + rng() * 3.2, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+  const scrim = ctx.createLinearGradient(0, 0, 0, CARD_H);
+  scrim.addColorStop(0, "rgba(13,13,13,0.62)");
+  scrim.addColorStop(0.20, "rgba(13,13,13,0.20)");
+  scrim.addColorStop(0.55, "rgba(13,13,13,0.12)");
+  scrim.addColorStop(0.70, "rgba(13,13,13,0.45)");
+  scrim.addColorStop(0.82, "rgba(13,13,13,0.80)");
+  scrim.addColorStop(1, "rgba(13,13,13,0.95)");
+  ctx.fillStyle = scrim; ctx.fillRect(0, 0, CARD_W, CARD_H);
+
+  // 2. thin gold keyline, drawn first so the garland hangs across it
+  ctx.strokeStyle = "rgba(201,168,76,0.55)"; ctx.lineWidth = 2.5;
+  const fr = 34;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(fr, fr, CARD_W - fr * 2, CARD_H - fr * 2, 26);
+  else ctx.rect(fr, fr, CARD_W - fr * 2, CARD_H - fr * 2);
+  ctx.stroke();
+
+  const shadowText = (text, x, y) => {
+    ctx.shadowColor = "rgba(0,0,0,0.85)"; ctx.shadowBlur = 12; ctx.shadowOffsetY = 3;
+    ctx.fillText(text, x, y);
+    ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  };
+  ctx.textAlign = "center";
+
+  // 3. wordmark under the garland
+  const wordmarkText = "Chasin\u2019 Curves";
+  const wmSize = fitText(ctx, wordmarkText, CARD_W - 360, 84, 44, s => `700 ${s}px 'Cormorant Garamond'`);
+  ctx.fillStyle = C.champagne;
+  ctx.font = `700 ${wmSize}px 'Cormorant Garamond'`;
+  shadowText(wordmarkText, cx, 262);
+  ctx.fillStyle = "rgba(245,243,238,0.8)";
+  ctx.font = "600 16px 'Josefin Sans'";
+  shadowText("R O A D S ,   R I V E R S   &   R I F F S", cx, 262 + 34);
+
+  // 4. dotted gold road with a red pin, the brand's route motif
+  const roadY = 905;
+  ctx.save();
+  ctx.strokeStyle = C.champagne; ctx.lineWidth = 6; ctx.lineCap = "round"; ctx.setLineDash([1, 20]);
+  ctx.shadowColor = "rgba(0,0,0,0.6)"; ctx.shadowBlur = 6;
+  ctx.beginPath(); ctx.moveTo(210, roadY + 26); ctx.bezierCurveTo(400, roadY - 46, 640, roadY + 74, 870, roadY);
+  ctx.stroke();
+  ctx.restore();
+  ctx.fillStyle = C.champagne; ctx.beginPath(); ctx.arc(210, roadY + 26, 9, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = C.red; ctx.beginPath(); ctx.arc(870, roadY, 11, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = C.bone; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(870, roadY, 11, 0, Math.PI * 2); ctx.stroke();
+
+  // 5. the message
+  const textMax = CARD_W - 420;
+  const greet = greeting || XMAS_GREETINGS[0];
+  const gSize = fitText(ctx, greet, textMax, 132, 64, s => `700 ${s}px 'Cormorant Garamond'`);
+  ctx.fillStyle = C.champagneLight;
+  ctx.font = `700 ${gSize}px 'Cormorant Garamond'`;
+  shadowText(greet, cx, 1038);
+
+  const who = member?.displayName || "a mate";
+  const rideName = `${vehicle.year || ""} ${vehicle.make || ""} ${vehicle.model || ""}`.replace(/\s+/g, " ").trim();
+  const fromLine = `from ${who} and their ${rideName}`;
+  const fSize = fitText(ctx, fromLine, textMax, 36, 22, s => `400 ${s}px 'Josefin Sans'`);
+  ctx.fillStyle = C.bone;
+  ctx.font = `400 ${fSize}px 'Josefin Sans'`;
+  shadowText(fromLine, cx, 1100);
+
+  const note = (message || "").trim();
+  if (note) {
+    const nSize = fitText(ctx, note, textMax, 30, 20, s => `400 ${s}px 'Josefin Sans'`);
+    ctx.fillStyle = "rgba(245,243,238,0.82)";
+    ctx.font = `400 ${nSize}px 'Josefin Sans'`;
+    shadowText(note, cx, 1160);
+  }
+
+  // 6. tinsel garland hanging across the top, anchored by a bow and mistletoe at each corner
+  drawTinselSwag(ctx, -40, 44, 275, 250, 540, 62, rng);
+  drawTinselSwag(ctx, 540, 62, 805, 250, 1120, 44, rng);
+  drawBauble(ctx, 540, 64, 19);
+  drawMistletoe(ctx, 78, 68, 0.30, 0.72, false, rng);
+  drawMistletoe(ctx, CARD_W - 78, 68, 0.30, 0.72, true, rng);
+  drawBow(ctx, 78, 68, 0.85);
+  drawBow(ctx, CARD_W - 78, 68, 0.85);
+
+  // 7. candy canes standing in the bottom corners
+  drawCandyCane(ctx, 92, CARD_H + 6, 250, 1, -0.07);
+  drawCandyCane(ctx, CARD_W - 92, CARD_H + 6, 250, -1, 0.07);
+
+  return new Promise(resolve => canvas.toBlob(blob => resolve(blob), "image/png", 0.95));
+};
+
 // Mapbox instance, so a recorded trip's data is actually visible rather
 // than just a point count. Deliberately not the drag-to-select Road
 // extraction UI from snail-trail-road-extraction.md — that's a separate,
