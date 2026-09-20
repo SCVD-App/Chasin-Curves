@@ -614,8 +614,25 @@ const TIERS = [
 const POINT_EXPIRY_DAYS = 90;
 
 // ─── UTILITIES ───────────────────────────────────────────────
+// ─── INTERNATIONAL ROADS ─────────────────────────────────────
+// Roads without a `country` are Australian (all existing roads). Overseas
+// roads carry country: "CH" etc. and no state. roadPlace() is the label
+// used for badges and for the filter chips (AU state code, or country name).
+const COUNTRIES = {
+  AU: "Australia", NZ: "New Zealand", CH: "Switzerland", IT: "Italy",
+  FR: "France", DE: "Germany", AT: "Austria", ES: "Spain", PT: "Portugal",
+  IE: "Ireland", GB: "United Kingdom", RO: "Romania", NO: "Norway",
+  US: "United States", CA: "Canada", JP: "Japan", ZA: "South Africa",
+};
+const roadCountry = r => r.country || "AU";
+const isAU = r => roadCountry(r) === "AU";
+const roadPlace = r => isAU(r) ? r.state : (COUNTRIES[roadCountry(r)] || roadCountry(r));
+// Curated roads start unrated (ratings: null) until members review them.
+const hasRatings = r => !!r.ratings && Object.keys(r.ratings).length > 0;
+
 const avgRating = r => {
-  const vals = Object.values(r.ratings);
+  const vals = Object.values(r.ratings || {});
+  if (!vals.length) return 0;
   return vals.reduce((a, b) => a + b, 0) / vals.length;
 };
 
@@ -826,6 +843,7 @@ const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
   const tripMarkersRef = useRef([]);
   const [mapReady, setMapReady] = useState(false);
   const [mapFailed, setMapFailed] = useState(false);
+  const lastWasIntl = useRef(false);
 
   // Init map once
   useEffect(() => {
@@ -885,6 +903,21 @@ const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
     });
   }, [roads, selected, mapReady]);
 
+  // Overseas roads: fly the map there on select, and come home to Eastern
+  // Australia when an Australian road is picked afterwards. Australian
+  // selections otherwise leave the map exactly where the member put it.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady || !selected?.startCoords) return;
+    const intl = !isAU(selected);
+    if (intl) {
+      map.flyTo({ center: [selected.startCoords.lng, selected.startCoords.lat], zoom: 8, duration: 1600 });
+    } else if (lastWasIntl.current) {
+      map.flyTo({ center: [148, -30], zoom: 4, duration: 1600 });
+    }
+    lastWasIntl.current = intl;
+  }, [selected, mapReady]);
+
   // Trip vehicle-avatar markers — reuses the existing VehicleAvatar component
   useEffect(() => {
     const map = mapRef.current;
@@ -922,7 +955,7 @@ const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
         </div>
       )}
 
-      <div style={{ position: "absolute", top: 10, left: 14, fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: "0.16em", pointerEvents: "none" }}>Eastern Australia</div>
+      <div style={{ position: "absolute", top: 10, left: 14, fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: "0.16em", pointerEvents: "none" }}>{selected && !isAU(selected) ? roadPlace(selected) : "Eastern Australia"}</div>
 
       <div style={{ position: "absolute", bottom: 8, right: 14, display: "flex", gap: 10, pointerEvents: "none" }}>
         {[["QLD",C.champagne],["NSW",C.blue],["TAS","#888"],["VIC","#666"]].map(([s,c]) => (
@@ -959,20 +992,26 @@ const RoadDetail = ({ road, onClose, currentUser, onOpenProfile }) => {
             <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
               {road.featured && <Badge color={C.champagne}>Featured</Badge>}
               {road.verified && <Badge color={C.blue}>✓ Verified</Badge>}
-              <Badge color={C.dim}>{road.state}</Badge>
+              <Badge color={C.dim}>{roadPlace(road)}</Badge>
             </div>
             <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, fontWeight: 700, color: C.bone, lineHeight: 1.1 }}>{road.name}</h3>
             <div style={{ fontSize: 11, color: C.dim, marginTop: 3, textTransform: "uppercase", letterSpacing: "0.1em" }}>{road.region}</div>
             {road.addedBy && <div style={{ marginTop: 5 }}><AddedByLink memberId={road.addedBy} onOpen={onOpenProfile} /></div>}
           </div>
           <div style={{ textAlign: "right", flexShrink: 0 }}>
-            <div style={{ fontSize: 20, fontFamily: "'Cormorant Garamond', serif", color: C.champagne, fontWeight: 600 }}>{avgRating(road).toFixed(1)}</div>
-            <StarRating value={avgRating(road)} />
-            <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>{road.reviews} reviews</div>
+            {hasRatings(road) ? (
+              <>
+                <div style={{ fontSize: 20, fontFamily: "'Cormorant Garamond', serif", color: C.champagne, fontWeight: 600 }}>{avgRating(road).toFixed(1)}</div>
+                <StarRating value={avgRating(road)} />
+                <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>{road.reviews} reviews</div>
+              </>
+            ) : (
+              <div style={{ fontSize: 11, color: C.dim, maxWidth: 90, lineHeight: 1.4 }}>Not yet rated. Be the first to review.</div>
+            )}
           </div>
         </div>
         <div style={{ display: "flex", gap: 20, marginTop: 12 }}>
-          {[["Distance", road.distance],["Drive Time", road.duration],["Thrill", road.ratings.thrill.toFixed(1) + " ★"]].map(([k,v]) => (
+          {[["Distance", road.distance],["Drive Time", road.duration],["Thrill", hasRatings(road) ? road.ratings.thrill.toFixed(1) + " ★" : "—"]].map(([k,v]) => (
             <div key={k}>
               <div style={{ fontSize: 13, color: C.bone, fontWeight: 600 }}>{v}</div>
               <div style={{ fontSize: 10, color: C.dim, textTransform: "uppercase", letterSpacing: "0.1em" }}>{k}</div>
@@ -1013,7 +1052,7 @@ const RoadDetail = ({ road, onClose, currentUser, onOpenProfile }) => {
           <>
             <div style={{ marginBottom: 20 }}>
               {[["driveability","Driveability"],["accessibility","Accessibility"],["views","Views / Scenery"],["surface","Surface Quality"],["thrill","Thrill Factor"]].map(([k,l]) => (
-                <RatingBar key={k} label={l} value={road.ratings[k]} />
+                <RatingBar key={k} label={l} value={road.ratings?.[k] || 0} />
               ))}
             </div>
             <div style={{ textAlign: "center", padding: 14, background: "#0a0a0a", borderRadius: 8, border: `1px solid ${C.border}` }}>
@@ -4080,7 +4119,7 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
 // handleSubmit — the server now awards add_road itself (worker.js Session
 // 17, POST /roads), so calling it here too would double-award every time.
 const AddRoadModal = ({ onClose, onAdd, currentUser, initialValues }) => {
-  const [form, setForm] = useState({ name:"", region:"", state:"QLD", description:"", distance:"", duration:"", tags:"", startLat:"", startLng:"", endLat:"", endLng:"", busyTimes:"", fuel:"", food:"", meetups:"", ...initialValues });
+  const [form, setForm] = useState({ name:"", region:"", country:"AU", state:"QLD", description:"", distance:"", duration:"", tags:"", startLat:"", startLng:"", endLat:"", endLng:"", busyTimes:"", fuel:"", food:"", meetups:"", ...initialValues });
   const [ratings, setRatings] = useState({ driveability:3, accessibility:3, views:3, surface:3, thrill:3, ...(initialValues?._ratings || {}) });
   const set = (k,v) => setForm(f=>({...f,[k]:v}));
 
@@ -4099,6 +4138,8 @@ const AddRoadModal = ({ onClose, onAdd, currentUser, initialValues }) => {
     if (!form.name || !form.region) return;
     onAdd({
       id: Date.now(), ...form,
+      country: form.country || "AU",
+      state: (form.country || "AU") === "AU" ? form.state : "",
       startCoords: { lat: parseFloat(form.startLat)||0, lng: parseFloat(form.startLng)||0 },
       endCoords: { lat: parseFloat(form.endLat)||0, lng: parseFloat(form.endLng)||0 },
       tags: form.tags.split(",").map(t=>t.trim()).filter(Boolean),
@@ -4128,11 +4169,19 @@ const AddRoadModal = ({ onClose, onAdd, currentUser, initialValues }) => {
         <div style={{ gridColumn: "1/-1" }}><Input label="Road Name *" value={form.name} onChange={v=>set("name",v)} placeholder="e.g. Kenilworth–Maleny Road" /></div>
         <Input label="Region *" value={form.region} onChange={v=>set("region",v)} placeholder="Sunshine Coast Hinterland" />
         <div>
-          <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>State</div>
-          <select value={form.state} onChange={e=>set("state",e.target.value)} style={{ width:"100%", background:"#0f0f0f", border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 12px", color:C.bone, fontSize:13, marginBottom:14 }}>
-            {["QLD","NSW","VIC","TAS","SA","WA","NT","ACT"].map(s=><option key={s}>{s}</option>)}
+          <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>Country</div>
+          <select value={form.country || "AU"} onChange={e=>set("country",e.target.value)} style={{ width:"100%", background:"#0f0f0f", border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 12px", color:C.bone, fontSize:13, marginBottom:14 }}>
+            {Object.entries(COUNTRIES).map(([code,name])=><option key={code} value={code}>{name}</option>)}
           </select>
         </div>
+        {(form.country || "AU") === "AU" && (
+          <div>
+            <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>State</div>
+            <select value={form.state} onChange={e=>set("state",e.target.value)} style={{ width:"100%", background:"#0f0f0f", border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 12px", color:C.bone, fontSize:13, marginBottom:14 }}>
+              {["QLD","NSW","VIC","TAS","SA","WA","NT","ACT"].map(s=><option key={s}>{s}</option>)}
+            </select>
+          </div>
+        )}
         <div style={{ gridColumn:"1/-1" }}><Input label="Description" value={form.description} onChange={v=>set("description",v)} placeholder="What makes this road worth chasing?" multiline /></div>
         <Input label="Distance" value={form.distance} onChange={v=>set("distance",v)} placeholder="28km" />
         <Input label="Drive Time" value={form.duration} onChange={v=>set("duration",v)} placeholder="35 min" />
@@ -5206,9 +5255,9 @@ const App = () => {
     }
   }, [currentUser, handleSignOut]);
 
-  const states = ["All", ...Array.from(new Set(roads.map(r => r.state)))];
+  const states = ["All", ...Array.from(new Set(roads.map(roadPlace)))];
   const filteredRoads = roads
-    .filter(r => filterState === "All" || r.state === filterState)
+    .filter(r => filterState === "All" || roadPlace(r) === filterState)
     .filter(r => !search || r.name.toLowerCase().includes(search.toLowerCase()) || r.region.toLowerCase().includes(search.toLowerCase()));
 
   // ── Show login screen if no user ────────────────────────────
@@ -5349,14 +5398,14 @@ const App = () => {
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ fontSize:15, fontFamily:"'Cormorant Garamond', serif", fontWeight:600, color:C.bone, lineHeight:1.2, marginBottom:2 }}>{r.name}</div>
-                      <div style={{ fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:6 }}>{r.region} · {r.state}</div>
+                      <div style={{ fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:6 }}>{r.region} · {roadPlace(r)}</div>
                     </div>
                     {r.alerts?.length > 0 && <span style={{ color:C.red, fontSize:14, flexShrink:0 }}>⚠</span>}
                   </div>
                   <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
                     <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                      <StarRating value={avgRating(r)} size={12} />
-                      <span style={{ fontSize:11, color:C.dim }}>{avgRating(r).toFixed(1)} · {r.reviews} reviews</span>
+                      {hasRatings(r) && <StarRating value={avgRating(r)} size={12} />}
+                      <span style={{ fontSize:11, color:C.dim }}>{hasRatings(r) ? `${avgRating(r).toFixed(1)} · ${r.reviews} reviews` : "Not yet rated"}</span>
                     </div>
                     <span style={{ fontSize:11, color:"#444" }}>{r.distance}</span>
                   </div>

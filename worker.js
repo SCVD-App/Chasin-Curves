@@ -291,10 +291,21 @@ function stripProtectedFields(body) {
   return clean;
 }
 
+// Rolling 24h cap on points earned, across every award reason. Points redeem
+// into free Pro months, so without a cap a script could loop POST /roads
+// (100 pts each) and mint Pro time. When over the cap the action itself still
+// succeeds; only the points are skipped. Raise or lower this number to taste.
+const DAILY_POINT_CAP = 300;
+
 async function awardPoints(env, email, amount, reason, meta = {}) {
   if (!email || !amount || amount <= 0) return;
   const ledgerKey = `points_ledger:${email}`;
   const ledger = JSON.parse(await env.CURVES_KV.get(ledgerKey) || '[]');
+  const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  const earnedToday = ledger
+    .filter(e => e.timestamp > dayAgo && e.amount > 0)
+    .reduce((sum, e) => sum + e.amount, 0);
+  if (earnedToday + amount > DAILY_POINT_CAP) return; // over the daily cap: no points
   ledger.push({ amount, reason, meta, timestamp: Date.now() });
   await env.CURVES_KV.put(ledgerKey, JSON.stringify(ledger));
 
@@ -852,8 +863,15 @@ export default {
         // the most points would have worked against that. See handoff.md
         // for the still-unbuilt points-redemption mechanic this implies.
         const body = await request.json();
-        const road = { ...body, addedBy: authedEmail }; // override — never trust client value
         const roads = JSON.parse(await env.CURVES_KV.get('roads') || '[]');
+        const road = {
+          ...body,
+          addedBy: authedEmail, // override — never trust client value
+          verified: false,      // trust badge: never client-settable
+          reviews: 0,           // review count comes from real reviews only
+        };
+        // A client-chosen id must not shadow an existing road.
+        if (roads.some(r => String(r.id) === String(road.id))) road.id = Date.now();
         roads.push(road);
         await env.CURVES_KV.put('roads', JSON.stringify(roads));
         await awardPoints(env, authedEmail, POINT_ACTIONS.add_road, 'add_road', { roadId: road.id });
@@ -874,9 +892,13 @@ export default {
       const id = roadMatch[1];
       const body = await request.json();
       const roads = JSON.parse(await env.CURVES_KV.get('roads') || '[]');
-      const idx = roads.findIndex(r => r.id === id);
+      const idx = roads.findIndex(r => String(r.id) === id);
       if (idx === -1) return err('Road not found', 404);
-      roads[idx] = { ...roads[idx], ...body };
+      // Only the member who added a road may edit it, and identity/trust
+      // fields can never be changed through this route.
+      if (roads[idx].addedBy !== authedEmail) return err('Forbidden', 403);
+      const { id: _id, addedBy: _by, verified: _v, reviews: _rv, ...safeRoadEdits } = body;
+      roads[idx] = { ...roads[idx], ...safeRoadEdits };
       await env.CURVES_KV.put('roads', JSON.stringify(roads));
       return json({ ok: true });
     }
@@ -1381,7 +1403,11 @@ export default {
       const trips = JSON.parse(await env.CURVES_KV.get('trips') || '[]');
       const idx = trips.findIndex(t => String(t.id) === id);
       if (idx === -1) return err('Trip not found', 404);
-      trips[idx] = { ...trips[idx], ...body };
+      // Host-only. Identity, status and attendees are never editable here:
+      // RSVPs go through /rsvp and cancellations through /cancel.
+      if (trips[idx].createdBy !== authedEmail) return err('Forbidden', 403);
+      const { id: _id, createdBy: _cb, status: _st, attendees: _at, ...safeTripEdits } = body;
+      trips[idx] = { ...trips[idx], ...safeTripEdits };
       await env.CURVES_KV.put('trips', JSON.stringify(trips));
       return json({ ok: true });
     }
@@ -1572,7 +1598,7 @@ export default {
       const reviews = JSON.parse(await env.CURVES_KV.get('reviews') || '[]');
       reviews.push(review);
       await env.CURVES_KV.put('reviews', JSON.stringify(reviews));
-      await awardPoints(env, authedEmail, POINT_ACTIONS.write_review, 'write_review', { roadId: review.roadId });
+      // Points paused: no UI calls this yet, and it had no validation or per-road limit.
       return json({ ok: true, review });
     }
 
@@ -1585,7 +1611,7 @@ export default {
       const alerts = JSON.parse(await env.CURVES_KV.get('alerts') || '[]');
       alerts.push(alert);
       await env.CURVES_KV.put('alerts', JSON.stringify(alerts));
-      await awardPoints(env, authedEmail, POINT_ACTIONS.report_alert, 'report_alert', { roadId: alert.roadId });
+      // Points paused: no UI calls this yet, and it had no validation or per-road limit.
       return json({ ok: true, alert });
     }
 
