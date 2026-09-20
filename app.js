@@ -101,6 +101,9 @@ const api = {
 
   getTrips: () => fetch(`${API}/trips`).then(r => r.json()),
   postTrip: (trip) => authedFetch(`${API}/trips`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(trip) }),
+  // Host controls: cancel with a reason, and delete once a run is cancelled or past.
+  cancelTrip: (id, reason) => authedFetch(`${API}/trips/${id}/cancel`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ reason }) }),
+  deleteTrip: (id) => authedFetch(`${API}/trips/${id}`, { method:"DELETE" }),
   updateTrip: (id, updates) => authedFetch(`${API}/trips/${id}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(updates) }),
   // Session 19: dedicated RSVP call — hits worker.js's atomic POST /trips/:id/rsvp
   // rather than updateTrip's whole-object PUT, so concurrent RSVPs from different
@@ -278,9 +281,9 @@ const PitPassProgress = ({ member }) => {
 // since worker.js's /admin/grant-pro can still comp one (Scott, beta
 // testers) — it's just never a purchasable option here.
 const PRO_PLANS = {
-  month1:  { label: "1 Month",   price: "$2.99",  amount: 299,  days: 30 },
-  month6:  { label: "6 Months",  price: "$11.99", amount: 1199, days: 180 },
-  month12: { label: "12 Months", price: "$19.99", amount: 1999, days: 365 },
+  month1:  { label: "1 Month",   price: "US$2.99",  amount: 299,  days: 30 },
+  month6:  { label: "6 Months",  price: "US$11.99", amount: 1199, days: 180 },
+  month12: { label: "12 Months", price: "US$19.99", amount: 1999, days: 365 },
 };
 
 // Points → free Pro redemption — mirrors worker.js's POINTS_PER_PRO_MONTH.
@@ -362,7 +365,7 @@ const UpgradeModal = ({ onClose }) => {
   };
 
   return (
-    <Modal title="Chasin' Curves Pro" subtitle="Trip Postcards · Logbook · TGM" onClose={onClose}>
+    <Modal title="Chasin' Curves Pro" subtitle="Trip Postcards · Logbook · Unlimited vehicles" onClose={onClose}>
       <div style={{ fontSize:12, color:C.dim, lineHeight:1.6, marginBottom:16 }}>
         One-time payment, no auto-renewal. The Garage stays free (1 vehicle) either way.
       </div>
@@ -3394,11 +3397,72 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onRefre
 };
 
 // ─── TRIP PLANNER ─────────────────────────────────────────────
+// Host controls on a run: labels must match CANCEL_REASONS in worker.js.
+const CANCEL_REASON_OPTIONS = [
+  { id: "weather", label: "Weather" },
+  { id: "hazard", label: "Road hazard" },
+  { id: "low_interest", label: "Not enough interest" },
+  { id: "personal", label: "Personal reasons" },
+];
+// A run counts as past a day after its date (same grace as the worker).
+const isPastTrip = t => !!t.date && new Date(t.date) < new Date(Date.now() - 24 * 60 * 60 * 1000);
+
 const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) => {
   const [showNew, setShowNew] = useState(false);
   const [form, setForm] = useState({ title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "", waypoints: [] });
   const [waypointInput, setWaypointInput] = useState("");
   const [geocoding, setGeocoding] = useState(false);
+  const [editId, setEditId] = useState(null);           // set while the modal is editing an existing run
+  const [cancelTarget, setCancelTarget] = useState(null);
+  const [cancelReason, setCancelReason] = useState("personal");
+  const [busyTripId, setBusyTripId] = useState(null);
+
+  const emptyForm = { title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "", waypoints: [] };
+  // Closing while editing discards the edit; closing while planning keeps your draft, as before.
+  const closeModal = () => { setShowNew(false); if (editId) { setEditId(null); setForm(emptyForm); } };
+
+  const startEdit = (trip) => {
+    setForm({ title: trip.title || "", date: trip.date || "", time: trip.time || "", selectedRoads: trip.routes || [],
+              vehicleId: trip.vehicleId || "", notes: trip.notes || "", waypoints: trip.waypoints || [] });
+    setEditId(trip.id);
+    setShowNew(true);
+  };
+
+  const handleSave = async () => {
+    if (!form.title || form.selectedRoads.length === 0) return;
+    const updates = { title: form.title, date: form.date, time: form.time, routes: form.selectedRoads,
+                      vehicleId: form.vehicleId, notes: form.notes, waypoints: form.waypoints };
+    try {
+      const res = await api.updateTrip(editId, updates);
+      if (res.error) { alert(res.error); return; }
+      setTrips(prev => prev.map(t => t.id === editId ? (res.trip || { ...t, ...updates }) : t));
+      setEditId(null); setForm(emptyForm); setShowNew(false);
+    } catch { alert("Couldn't save your changes. Check your connection and try again."); }
+  };
+
+  const confirmCancel = async () => {
+    const trip = cancelTarget;
+    if (!trip) return;
+    setBusyTripId(trip.id);
+    try {
+      const res = await api.cancelTrip(trip.id, cancelReason);
+      if (res.error) alert(res.error);
+      else setTrips(prev => prev.map(t => t.id === trip.id ? (res.trip || { ...t, status: "cancelled", cancelReason }) : t));
+    } catch { alert("Couldn't cancel the run. Check your connection and try again."); }
+    setBusyTripId(null);
+    setCancelTarget(null);
+  };
+
+  const deleteRun = async (trip) => {
+    if (!window.confirm(`Delete "${trip.title}" for good? Anyone opening its invite link will find it gone. This can't be undone.`)) return;
+    setBusyTripId(trip.id);
+    try {
+      const res = await api.deleteTrip(trip.id);
+      if (res.error) alert(res.error);
+      else setTrips(prev => prev.filter(t => t.id !== trip.id));
+    } catch { alert("Couldn't delete the run. Check your connection and try again."); }
+    setBusyTripId(null);
+  };
 
   const handleCreate = async () => {
     if (!form.title || form.selectedRoads.length === 0) return;
@@ -3545,6 +3609,11 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
         const vehicle = organiser?.garage.find(v => v.id === trip.vehicleId);
         const tripRoads = roads.filter(r => trip.routes.includes(r.id));
         const isJoined = trip.attendees?.some(a => a.memberId === currentUser.id);
+        const isHost = trip.createdBy === currentUser.id;
+        const isCancelled = trip.status === "cancelled";
+        const isPast = isPastTrip(trip);
+        const canManage = isHost && !isCancelled && !isPast;   // edit or cancel
+        const canDelete = isHost && (isCancelled || isPast);
 
         return (
           <div key={trip.id} style={{ background: "#0a0a0a", border: `1px solid ${C.border}`, borderRadius: 10, padding: 16, marginBottom: 12 }}>
@@ -3552,6 +3621,11 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
               <div>
                 <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 17, fontWeight: 600, color: C.bone, marginBottom: 2 }}>{trip.title}</div>
                 <div style={{ fontSize: 11, color: C.dim }}>{trip.date && `${fmtDate(trip.date)}`}{trip.time && ` · ${trip.time}`}</div>
+                {trip.status === "cancelled" && (
+                  <div style={{ marginTop: 6 }}>
+                    <Badge color={C.red}>Cancelled{trip.cancelReason ? ` · ${CANCEL_REASON_OPTIONS.find(o => o.id === trip.cancelReason)?.label || trip.cancelReason}` : ""}</Badge>
+                  </div>
+                )}
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 {vehicle && <VehicleAvatar vehicle={vehicle} size={36} />}
@@ -3577,19 +3651,31 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
               </div>
             )}
             {trip.notes && <div style={{ fontSize: 12, color: C.dim, marginBottom: 10, fontStyle: "italic" }}>{trip.notes}</div>}
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              {!isJoined && trip.createdBy !== currentUser.id && (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              {!isJoined && !isHost && !isCancelled && (
                 <Btn size="sm" variant="blue" onClick={() => joinTrip(trip.id)}>Join this Run</Btn>
               )}
-              {isJoined && <Badge color={C.blue}>✓ You're in</Badge>}
-              <Btn size="sm" variant="ghost" disabled={sharingTripId === trip.id} onClick={() => shareTrip(trip)}>{sharingTripId === trip.id ? "Building..." : "📤 Share"}</Btn>
+              {isJoined && !isCancelled && <Badge color={C.blue}>✓ You're in</Badge>}
+              {!isCancelled && (
+                <Btn size="sm" variant="ghost" disabled={sharingTripId === trip.id} onClick={() => shareTrip(trip)}>{sharingTripId === trip.id ? "Building..." : "📤 Share"}</Btn>
+              )}
+              {canManage && <Btn size="sm" variant="ghost" onClick={() => startEdit(trip)}>✏️ Edit</Btn>}
+              {canManage && <Btn size="sm" variant="danger" disabled={busyTripId === trip.id} onClick={() => { setCancelReason("personal"); setCancelTarget(trip); }}>Cancel run</Btn>}
+              {canDelete && <Btn size="sm" variant="danger" disabled={busyTripId === trip.id} onClick={() => deleteRun(trip)}>Delete</Btn>}
             </div>
           </div>
         );
       })}
 
       {showNew && (
-        <Modal title="Plan a Run" subtitle="Share your route with the community · +20 pts" onClose={() => setShowNew(false)}>
+        <Modal
+          title={editId ? "Edit Run" : "Plan a Run"}
+          subtitle={editId
+            ? ((trips.find(t => t.id === editId)?.attendees || []).filter(a => a.memberId !== currentUser.id).length > 0
+                ? "Others have already joined. They won't be notified, so re-share the invite after saving."
+                : "Changes update the shared invite link.")
+            : "Share your route with the community · +20 pts"}
+          onClose={closeModal}>
           <Input label="Run Name *" value={form.title} onChange={v => setForm(f=>({...f,title:v}))} placeholder="Sunday morning hinterland loop" />
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Input label="Date" value={form.date} onChange={v => setForm(f=>({...f,date:v}))} type="date" />
@@ -3643,8 +3729,29 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
           </div>
           <Input label="Notes" value={form.notes} onChange={v => setForm(f=>({...f,notes:v}))} placeholder="Pace notes, anything else..." multiline />
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-            <Btn variant="ghost" onClick={() => setShowNew(false)} style={{ flex: 1 }}>Cancel</Btn>
-            <Btn onClick={handleCreate} style={{ flex: 2 }}>Publish Run</Btn>
+            <Btn variant="ghost" onClick={closeModal} style={{ flex: 1 }}>{editId ? "Discard" : "Cancel"}</Btn>
+            <Btn onClick={editId ? handleSave : handleCreate} style={{ flex: 2 }}>{editId ? "Save Changes" : "Publish Run"}</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {cancelTarget && (
+        <Modal title="Cancel this run?" subtitle={cancelTarget.title} onClose={() => setCancelTarget(null)}>
+          <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 14 }}>
+            Anyone who opens the invite link will see the run was cancelled, along with the reason you pick. This can't be undone.
+            {(cancelTarget.attendees || []).filter(a => a.memberId !== currentUser.id).length > 0 && " People who joined won't be notified automatically, so let them know."}
+          </div>
+          <div style={{ marginBottom: 18 }}>
+            {CANCEL_REASON_OPTIONS.map(o => (
+              <div key={o.id} onClick={() => setCancelReason(o.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}>
+                <div style={{ width: 16, height: 16, borderRadius: "50%", border: `2px solid ${cancelReason === o.id ? C.champagne : C.border2}`, background: cancelReason === o.id ? C.champagneDim : "none" }} />
+                <div style={{ fontSize: 13, color: C.bone }}>{o.label}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn variant="ghost" onClick={() => setCancelTarget(null)} style={{ flex: 1 }}>Keep run</Btn>
+            <Btn variant="danger" disabled={busyTripId === cancelTarget.id} onClick={confirmCancel} style={{ flex: 2 }}>Cancel run</Btn>
           </div>
         </Modal>
       )}
@@ -4780,6 +4887,7 @@ const App = () => {
   const [filterState, setFilterState] = useState("All");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [apiError, setApiError] = useState(false); // true when the roads/trips API couldn't be reached at startup
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginStep, setLoginStep] = useState("email"); // "email" | "code"
   const [loginError, setLoginError] = useState("");
@@ -4919,7 +5027,7 @@ const App = () => {
           const res = await api.checkoutStatus(sessionId);
           if (res?.granted) {
             await loadUser(currentUser.id);
-            setPaymentNotice({ type: "success", message: "You're Pro! Trip Postcards, Logbook and TGM are all unlocked." });
+            setPaymentNotice({ type: "success", message: "You're Pro! Trip Postcards, the Logbook and unlimited vehicles are unlocked." });
           } else {
             setPaymentNotice({ type: "error", message: "Payment received but not confirmed yet — check back in a minute, or email support@scvd.app." });
           }
@@ -5323,6 +5431,7 @@ const App = () => {
 
       <PitPassBanner member={currentUser} onDismiss={handleActivatePitPass} />
       <PaymentNotice notice={paymentNotice} onDismiss={() => setPaymentNotice(null)} />
+      {apiError && <PaymentNotice notice={{ type: "error", message: "Can't reach the server right now. Showing sample roads until it's back." }} onDismiss={() => setApiError(false)} />}
 
       <ActiveTripBanner
         activeTrip={activeTrip}

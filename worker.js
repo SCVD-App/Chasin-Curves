@@ -1406,8 +1406,38 @@ export default {
       // Host-only. Identity, status and attendees are never editable here:
       // RSVPs go through /rsvp and cancellations through /cancel.
       if (trips[idx].createdBy !== authedEmail) return err('Forbidden', 403);
-      const { id: _id, createdBy: _cb, status: _st, attendees: _at, ...safeTripEdits } = body;
-      trips[idx] = { ...trips[idx], ...safeTripEdits };
+      if (trips[idx].status === 'cancelled') return err('This run has been cancelled and can no longer be edited', 409);
+      const { id: _id, createdBy: _cb, status: _st, attendees: _at, cancelReason: _cr, cancelledAt: _ca, ...safeTripEdits } = body;
+      const updated = { ...trips[idx], ...safeTripEdits, updatedAt: Date.now() };
+      // Keep the host's own attendee entry pointing at the vehicle they're actually bringing.
+      if (safeTripEdits.vehicleId) {
+        updated.attendees = (updated.attendees || []).map(a =>
+          a.memberId === updated.createdBy ? { ...a, vehicleId: safeTripEdits.vehicleId } : a);
+      }
+      trips[idx] = updated;
+      await env.CURVES_KV.put('trips', JSON.stringify(trips));
+      return json({ ok: true, trip: updated });
+    }
+
+    // DELETE /trips/:id — host-only, and only once a run is cancelled or already
+    // past, so a live invite with people joined can't just vanish. Cancel first.
+    if (tripMatch && method === 'DELETE') {
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+
+      const id = tripMatch[1];
+      const trips = JSON.parse(await env.CURVES_KV.get('trips') || '[]');
+      const idx = trips.findIndex(t => String(t.id) === id);
+      if (idx === -1) return err('Trip not found', 404);
+      const trip = trips[idx];
+      if (trip.createdBy !== authedEmail) return err('Only the host can delete this run', 403);
+
+      const dateMs = trip.date ? Date.parse(trip.date) : NaN;
+      const isPast = !isNaN(dateMs) && dateMs < Date.now() - 24 * 60 * 60 * 1000;
+      if (trip.status !== 'cancelled' && !isPast) {
+        return err('Cancel this run first, or wait until it has finished, before deleting it', 409);
+      }
+      trips.splice(idx, 1);
       await env.CURVES_KV.put('trips', JSON.stringify(trips));
       return json({ ok: true });
     }
@@ -1632,7 +1662,7 @@ export default {
           'customer_email': authedEmail,
           'line_items[0][price_data][currency]': 'usd',
           'line_items[0][price_data][product_data][name]': `Chasin' Curves Pro — ${plan.label}`,
-          'line_items[0][price_data][product_data][description]': "Trip Postcards, Logbook & TGM. One-time payment, no auto-renewal.",
+          'line_items[0][price_data][product_data][description]': "Trip Postcards, Logbook & unlimited vehicles. One-time payment, no auto-renewal.",
           'line_items[0][price_data][unit_amount]': plan.amount.toString(),
           'line_items[0][quantity]': '1',
           'metadata[email]': authedEmail,
