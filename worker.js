@@ -1754,6 +1754,26 @@ export default {
       return json({ ok: true, deletedCount, remainingCount: remaining.length });
     }
 
+    // POST /admin/update-road — admin-key gated edit of any road. Members can't
+    // edit seed roads (they weren't added under a real login email), so this is
+    // how seed data gets fixed, e.g. the hard-coded review counts.
+    if (path === '/admin/update-road' && method === 'POST') {
+      const body = await request.json();
+      if (!env.CURVES_ADMIN_KEY || body.adminKey !== env.CURVES_ADMIN_KEY) {
+        return err('Unauthorised', 403);
+      }
+      if (body.roadId == null || !body.updates || typeof body.updates !== 'object') {
+        return err('roadId and updates required');
+      }
+      const roads = JSON.parse(await env.CURVES_KV.get('roads') || '[]');
+      const idx = roads.findIndex(r => String(r.id) === String(body.roadId));
+      if (idx === -1) return err('Road not found', 404);
+      const { id: _id, ...updates } = body.updates; // a road's id is never changeable
+      roads[idx] = { ...roads[idx], ...updates };
+      await env.CURVES_KV.put('roads', JSON.stringify(roads));
+      return json({ ok: true, road: roads[idx] });
+    }
+
     return err('Not found', 404);
   },
 };
