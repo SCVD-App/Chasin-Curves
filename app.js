@@ -5004,13 +5004,12 @@ const TOUR_SLIDES = [
     caption: null, // the postcard already has its own title/stats/route baked in — no need to double up
   },
   {
-    // Session 27: rebuilt to mirror the REAL Trips & Runs list screen —
-    // was two separate fabricated slides (a single invite card, and an
-    // empty form mockup with invented road names). Merged into one,
-    // matching Scott's actual screenshot: the header, the bold "+ Plan a
-    // Run" button new visitors would step into when ready, and one real
-    // trip card underneath (Kenilworth Donuts Run) with its actual roads
-    // and notes.
+    // Session 29: swapped the stale, past-dated "Kenilworth Donuts Run"
+    // (18 Sept — already happened by the time anyone would see this) for
+    // Scott's real, upcoming, currently-hosted run. Also now shows Edit and
+    // Cancel Run alongside Share, since this is genuinely Scott's own run
+    // as host — a chance to put the new host controls in front of
+    // visitors, not just members who happen to host a run themselves.
     meta: "Trips & Runs",
     fit: true,
     photoUrl: null,
@@ -5025,18 +5024,20 @@ const TOUR_SLIDES = [
         </div>
         <div style={{ border:`1px solid ${C.border}`, borderRadius:10, padding:14 }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
-            <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, fontWeight:600, color:C.bone }}>Kenilworth Donuts Run</div>
+            <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, fontWeight:600, color:C.bone }}>Goodbye 2026 Cruise</div>
             <div style={{ fontSize:10, color:C.dim }}>1 going</div>
           </div>
-          <div style={{ fontSize:10, color:C.dim, marginBottom:8 }}>18 Sept 2026 · 09:30</div>
+          <div style={{ fontSize:10, color:C.dim, marginBottom:8 }}>27 Dec 2026 · 08:00</div>
           <div style={{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
             <span style={{ fontSize:9, padding:"3px 9px", borderRadius:12, background:"#1a1608", color:C.champagne }}>Kenilworth-Maleny Road</span>
             <span style={{ fontSize:9, padding:"3px 9px", borderRadius:12, background:"#1a1608", color:C.champagne }}>Peachester Road</span>
           </div>
-          <div style={{ fontSize:10, color:C.dim, fontStyle:"italic", marginBottom:12 }}>Coffee, curves, donuts and more coffee...</div>
-          <div style={{ display:"flex", gap:8 }}>
+          <div style={{ fontSize:10, color:C.dim, fontStyle:"italic", marginBottom:12 }}>Coffee to start, then up the hill and around a few scenic curves before returning to Aussie World for some lunch and a beer</div>
+          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
             <span style={{ fontSize:10, padding:"5px 12px", borderRadius:6, border:`1px solid ${C.blue}`, color:C.blue }}>✓ YOU'RE IN</span>
             <span style={{ fontSize:10, padding:"5px 12px", borderRadius:6, border:`1px solid ${C.border}`, color:C.dim }}>📤 SHARE</span>
+            <span style={{ fontSize:10, padding:"5px 12px", borderRadius:6, border:`1px solid ${C.border}`, color:C.dim }}>✏️ EDIT</span>
+            <span style={{ fontSize:10, padding:"5px 12px", borderRadius:6, border:`1px solid ${C.red}`, color:C.red }}>CANCEL RUN</span>
           </div>
         </div>
       </div>
@@ -5072,31 +5073,19 @@ const TOUR_SLIDES = [
     caption: null,
   },
   {
-    // Session 27: replaced with a real Roads LIST view (matching the
-    // actual screen) instead of an invented squiggly map illustration —
-    // per Scott's call, the list itself (real names, ratings, tags,
-    // distances) already gives new visitors the gist.
-    meta: "Community Roads",
+    // Session 29: real, current screenshot (same file used on the scvd.app
+    // landing page) — replaces the earlier two-road mockup, which listed
+    // only Kenilworth-Maleny and Bruxner Highway and had no idea the roads
+    // list now spans multiple countries. A live screenshot can't go stale
+    // the way a hand-built mockup did: it shows exactly what's in the app
+    // the day it's taken, chips and all (Switzerland selected, Furka Pass /
+    // Bernina Pass / Stelvio Pass visible). `fit:true` because, like the
+    // Postcards slide, every edge (title, chips, list) matters and the
+    // image already carries its own text — no caption needed.
+    meta: "Roads",
     fit: true,
-    photoUrl: null,
-    bg: () => (
-      <div style={{ position:"absolute", inset:0, background:"#0a0a0a", padding:"6%" }}>
-        <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:18, color:C.champagne, marginBottom:14 }}>Roads</div>
-        {[
-          { name:"Kenilworth–Maleny Road", region:"Sunshine Coast Hinterland · QLD", rating:"4.5 · 24 reviews", tags:["HINTERLAND","TWISTIES"] },
-          { name:"Bruxner Highway — Gibraltar Range", region:"Northern NSW Ranges · NSW", rating:"4.4 · 41 reviews", tags:["HIGHWAY","RAINFOREST"] },
-        ].map(r => (
-          <div key={r.name} style={{ marginBottom:16, paddingBottom:16, borderBottom:`1px solid ${C.border}` }}>
-            <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:15, fontWeight:600, color:C.bone }}>{r.name}</div>
-            <div style={{ fontSize:10, color:C.dim, marginBottom:4 }}>{r.region}</div>
-            <div style={{ fontSize:10, color:C.champagne, marginBottom:6 }}>★ {r.rating}</div>
-            <div style={{ display:"flex", gap:6 }}>
-              {r.tags.map(t => <span key={t} style={{ fontSize:9, padding:"2px 8px", borderRadius:10, background:"#151515", color:C.muted }}>{t}</span>)}
-            </div>
-          </div>
-        ))}
-      </div>
-    ),
+    photoUrl: "https://scvd.app/images/cc-roads.jpg",
+    bg: () => <div style={{ position:"absolute", inset:0, background:"#0d0d0d" }} />,
     caption: null,
   },
 ];
