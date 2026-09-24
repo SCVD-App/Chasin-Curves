@@ -4071,9 +4071,20 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
     // Session 17: api.postTrip() now hits the server-awarded POST /trips
     // (worker.js Session 17) — the old onPointsEarned("plan_trip") call
     // that used to sit here was a straight double-award, removed.
-    try { const res = await api.postTrip(trip); setTrips(prev => [...prev, res.trip || trip]); await onRefreshPoints?.(); } catch { setTrips(prev => [...prev, trip]); }
+    // Session 30: once the server has the run, open its invite full-screen
+    // (see openInvite below) rather than dropping back to the list — the
+    // public invite endpoint needs the run to exist server-side, so a run
+    // that only saved locally (offline/failed POST) just returns to the list.
+    let saved = trip, persisted = false;
+    try {
+      const res = await api.postTrip(trip);
+      if (res.trip) { saved = res.trip; persisted = true; }
+      setTrips(prev => [...prev, saved]);
+      await onRefreshPoints?.();
+    } catch { if (!persisted) setTrips(prev => [...prev, trip]); }
     setForm({ title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "", waypoints: [] });
     setShowNew(false);
+    if (persisted) openInvite(saved, true);
   };
 
   // Session 20: geocodes a typed place name (BP Landsborough, Witta, Aussie
@@ -4127,19 +4138,41 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
     }
   };
 
-  // Session 29: now builds and shares a real poster image (drawTripInviteCard,
-  // canvas-drawn — see its definition for why this is a sibling of
-  // drawTripCard, not a rebuild) alongside the /run/:id link, same
-  // file+text share pattern as handleShareVehicle above. Falls back to a
-  // link-only share if canShare({files}) isn't supported, then to
-  // clipboard — same three-tier fallback shareTrip already had, just with
-  // an image attached at the top tier now. Fetches GET /trips/:id/public
-  // (same no-auth endpoint /run/:id itself calls) so this works whether
-  // the sharer is the trip's own organiser or someone else re-sharing it.
-  const [sharingTripId, setSharingTripId] = useState(null);
-  const shareTrip = async (trip) => {
+  // Session 30: publishing a run (and tapping Invite on a run card) now
+  // opens a full-screen in-app invite — the poster itself, with a Share
+  // button pinned to the bottom — instead of jumping straight to the OS
+  // share sheet, which made the end of "Publish Run" feel like an
+  // anti-climax (you never saw the invite you'd just made).
+  // The poster (drawTripInviteCard, see its definition for why it's a
+  // sibling of drawTripCard) is built BEFORE the person taps Share, so
+  // navigator.share() fires directly inside their tap — some browsers
+  // refuse a share that fires after a long async build, which the old
+  // build-then-share order risked. Data still comes from GET
+  // /trips/:id/public (same no-auth endpoint /run/:id calls), so this
+  // works for the organiser or anyone re-sharing. Share keeps the same
+  // three-tier fallback: image + text, then link only, then clipboard —
+  // and if the poster can't be built at all, the screen still offers the
+  // plain link rather than leaving the person with nothing.
+  const [invite, setInvite] = useState(null); // { trip, shareUrl, title, status: "building"|"ready"|"error", url, blob, justPublished }
+  const inviteUrlRef = useRef(null);            // current blob: URL, so it can be revoked
+  const inviteActiveRef = useRef(null);         // trip id the screen is showing (guards a build finishing after close)
+
+  const revokeInviteUrl = () => {
+    if (inviteUrlRef.current) { URL.revokeObjectURL(inviteUrlRef.current); inviteUrlRef.current = null; }
+  };
+  useEffect(() => () => revokeInviteUrl(), []); // switching tabs unmounts this screen — don't leak the image
+
+  const closeInvite = () => {
+    inviteActiveRef.current = null;
+    revokeInviteUrl();
+    setInvite(null);
+  };
+
+  const openInvite = async (trip, justPublished = false) => {
     const shareUrl = `${API}/run/${trip.id}`;
-    setSharingTripId(trip.id);
+    revokeInviteUrl();
+    inviteActiveRef.current = trip.id;
+    setInvite({ trip, shareUrl, title: trip.title, status: "building", justPublished });
     try {
       const res = await fetch(`${API}/trips/${trip.id}/public`).then(r => r.json());
       if (res.error) throw new Error(res.error);
@@ -4156,30 +4189,57 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
         goingCount: res.goingCount,
       });
       if (!blob) throw new Error("card render unavailable");
-      const file = new File([blob], "chasin-curves-invite.png", { type: "image/png" });
-      const shareText = `${res.title} — join us on Chasin' Curves 🏁\n${shareUrl}`;
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], title: "Chasin' Curves", text: shareText });
-      } else if (navigator.share) {
-        await navigator.share({ title: `${res.title} — Chasin' Curves`, url: shareUrl });
-      } else if (navigator.clipboard) {
-        await navigator.clipboard.writeText(shareUrl);
-        alert("Invite link copied — paste it wherever you like.");
-      }
+      if (inviteActiveRef.current !== trip.id) return; // closed while building
+      const url = URL.createObjectURL(blob);
+      inviteUrlRef.current = url;
+      setInvite(prev => prev && prev.trip.id === trip.id ? { ...prev, status: "ready", url, blob, title: res.title || trip.title } : prev);
     } catch (e) {
-      if (e?.name !== "AbortError") {
-        console.error("[Chasin' Curves] trip invite poster build failed", e);
-        // Poster generation failing (a bad photo URL, Mapbox hiccup, etc.)
-        // shouldn't mean the person can't share the trip at all — fall
-        // back to the plain link, same as before this session's poster work.
-        try {
-          if (navigator.share) await navigator.share({ title: `${trip.title} — Chasin' Curves`, url: shareUrl });
-          else if (navigator.clipboard) { await navigator.clipboard.writeText(shareUrl); alert("Invite link copied — paste it wherever you like."); }
-        } catch { /* user cancelled the fallback share sheet — fine */ }
-      }
-    } finally {
-      setSharingTripId(null);
+      console.error("[Chasin' Curves] trip invite poster build failed", e);
+      // A bad photo URL, a Mapbox hiccup, etc. shouldn't mean the trip
+      // can't be shared at all — the screen falls back to the plain link.
+      if (inviteActiveRef.current !== trip.id) return;
+      setInvite(prev => prev && prev.trip.id === trip.id ? { ...prev, status: "error" } : prev);
     }
+  };
+
+  const copyInviteLink = async () => {
+    if (!invite) return;
+    try {
+      await navigator.clipboard.writeText(invite.shareUrl);
+      alert("Invite link copied — paste it wherever you like.");
+    } catch {
+      window.prompt("Copy this invite link:", invite.shareUrl);
+    }
+  };
+
+  const shareInvite = async () => {
+    if (!invite) return;
+    const { shareUrl, title, blob } = invite;
+    const text = `${title} — join us on Chasin' Curves 🏁\n${shareUrl}`;
+    try {
+      if (blob) {
+        const file = new File([blob], "chasin-curves-invite.png", { type: "image/png" });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: "Chasin' Curves", text });
+          return;
+        }
+      }
+      if (navigator.share) {
+        await navigator.share({ title: `${title} — Chasin' Curves`, url: shareUrl });
+        return;
+      }
+      await copyInviteLink();
+    } catch (e) {
+      if (e?.name === "AbortError") return; // backed out of the share sheet — fine
+      await copyInviteLink();
+    }
+  };
+
+  const saveInviteImage = () => {
+    if (!invite?.url) return;
+    const a = document.createElement("a");
+    a.href = invite.url; a.download = "chasin-curves-invite.png";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
   };
 
   return (
@@ -4252,7 +4312,7 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
               )}
               {isJoined && !isCancelled && <Badge color={C.blue}>✓ You're in</Badge>}
               {!isCancelled && (
-                <Btn size="sm" variant="ghost" disabled={sharingTripId === trip.id} onClick={() => shareTrip(trip)}>{sharingTripId === trip.id ? "Building..." : "📤 Share"}</Btn>
+                <Btn size="sm" variant="ghost" onClick={() => openInvite(trip)}>🎟 Invite</Btn>
               )}
               {canManage && <Btn size="sm" variant="ghost" onClick={() => startEdit(trip)}>✏️ Edit</Btn>}
               {canManage && <Btn size="sm" variant="danger" disabled={busyTripId === trip.id} onClick={() => { setCancelReason("personal"); setCancelTarget(trip); }}>Cancel run</Btn>}
@@ -4349,6 +4409,48 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
             <Btn variant="danger" disabled={busyTripId === cancelTarget.id} onClick={confirmCancel} style={{ flex: 2 }}>Cancel run</Btn>
           </div>
         </Modal>
+      )}
+
+      {invite && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 250, background: C.midnight, display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", paddingTop: "calc(14px + env(safe-area-inset-top, 0px))", borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+            <button onClick={closeInvite} style={{ background: "none", border: "none", color: C.champagne, fontFamily: "'Josefin Sans', sans-serif", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", padding: 0, minWidth: 80, textAlign: "left" }}>
+              ‹ {invite.justPublished ? "Done" : "Back"}
+            </button>
+            <div style={{ fontSize: 11, color: C.champagne, textTransform: "uppercase", letterSpacing: "0.14em" }}>
+              {invite.justPublished ? "🏁 Run published" : "Trip invite"}
+            </div>
+            <div style={{ minWidth: 80 }} />
+          </div>
+
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+            {invite.status === "building" && (
+              <div style={{ textAlign: "center", color: C.dim, fontSize: 13 }}>
+                <div style={{ fontSize: 32, marginBottom: 10 }}>🏁</div>
+                Building your invite…
+              </div>
+            )}
+            {invite.status === "ready" && (
+              <img src={invite.url} alt={`${invite.title} — trip invite`} style={{ maxWidth: "100%", maxHeight: "100%", width: "auto", height: "auto", objectFit: "contain", borderRadius: 10, border: `1px solid ${C.border}`, boxShadow: "0 8px 40px #000a" }} />
+            )}
+            {invite.status === "error" && (
+              <div style={{ textAlign: "center", color: C.muted, fontSize: 13, lineHeight: 1.6, maxWidth: 300 }}>
+                <div style={{ fontSize: 32, marginBottom: 10 }}>⚠️</div>
+                Couldn't build the invite picture this time. Your run is still published — you can share its link below.
+              </div>
+            )}
+          </div>
+
+          <div style={{ flexShrink: 0, padding: "12px 16px", paddingBottom: "calc(16px + env(safe-area-inset-bottom, 0px))", borderTop: `1px solid ${C.border}`, background: C.midnight }}>
+            <Btn size="lg" onClick={shareInvite} disabled={invite.status === "building"} style={{ width: "100%" }}>
+              📤 Share invite
+            </Btn>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <Btn size="sm" variant="ghost" onClick={copyInviteLink} style={{ flex: 1 }}>Copy link</Btn>
+              {invite.status === "ready" && <Btn size="sm" variant="ghost" onClick={saveInviteImage} style={{ flex: 1 }}>Save image</Btn>}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
