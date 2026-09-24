@@ -3986,6 +3986,194 @@ const LiveTripView = ({ activeTrip, entry, vehicle, member, onClose }) => {
   );
 };
 
+// Session 30 — LiveMapView: a full-screen live map that opens automatically
+// when a GPS-tracked trip starts, and can be reopened from the banner's
+// 🗺 Map button. Before this the only sign a trip was recording was a small
+// banner on whichever screen you happened to be on — easy to forget it was
+// running. Distinct from LiveTripView above, which is the small compliance
+// "Live Log" for showing an officer a roadside check.
+// It shows what the recorder is actually doing: a big pulsing "recording"
+// state, your position and the trail so far (following you, until you drag
+// the map — then a Recenter button appears), the timer and approximate
+// distance, and how long since the last GPS fix — turning amber if the
+// recorder has gone quiet (phone locked, another app in front), which is the
+// failure this screen most needs to catch. The screen stays awake while a
+// trip records (Wake Lock, requested when the trip starts).
+// Privacy: the trail drawn here goes through clipTrailForPrivacy like every
+// other map in the app, so with the home fence on, nothing is drawn until
+// you're clear of your home zone (and the recording itself is untouched).
+// Stop is deliberately two taps ("Tap again to stop") — it's a big button on
+// a phone that's probably mounted on a dashboard.
+const fmtElapsed = (ms) => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const pad = n => String(n).padStart(2, "0");
+  return h ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+};
+
+const LiveMapView = ({ activeTrip, vehicleName, member, onMinimise, onStop }) => {
+  const mapContainer = useRef(null);
+  const mapRef = useRef(null);
+  const markerRef = useRef(null);
+  const followingRef = useRef(true);
+  const [following, setFollowing] = useState(true);
+  const [mapReady, setMapReady] = useState(false);
+  const [mapFailed, setMapFailed] = useState(false);
+  const [now, setNow] = useState(Date.now());
+  const [stopArmed, setStopArmed] = useState(false);
+
+  const pts = activeTrip?.points || [];
+  const shown = useMemo(() => clipTrailForPrivacy(pts, member), [pts, member]);
+  const last = pts[pts.length - 1];
+  const fixAgeSec = last ? Math.max(0, Math.floor((now - last.t) / 1000)) : null;
+  const distanceKm = useMemo(() => {
+    let km = 0;
+    for (let i = 1; i < pts.length; i++) km += haversineKm(pts[i - 1].lat, pts[i - 1].lng, pts[i].lat, pts[i].lng);
+    return km;
+  }, [pts]);
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Two-tap stop: the first tap arms it for 4 seconds.
+  useEffect(() => {
+    if (!stopArmed) return;
+    const id = setTimeout(() => setStopArmed(false), 4000);
+    return () => clearTimeout(id);
+  }, [stopArmed]);
+
+  useEffect(() => {
+    if (!window.mapboxgl || MAPBOX_TOKEN.includes("PASTE_YOUR")) { setMapFailed(true); return; }
+    window.mapboxgl.accessToken = MAPBOX_TOKEN;
+    const map = new window.mapboxgl.Map({
+      container: mapContainer.current,
+      style: "mapbox://styles/mapbox/dark-v11",
+      center: [148, -30],
+      zoom: 4,
+      attributionControl: false,
+    });
+    map.addControl(new window.mapboxgl.AttributionControl({ compact: true }), "top-right");
+    map.on("load", () => {
+      map.addSource("trail", { type: "geojson", data: { type: "Feature", geometry: { type: "LineString", coordinates: [] } } });
+      map.addLayer({ id: "trail-glow", type: "line", source: "trail", paint: { "line-color": C.champagne, "line-width": 10, "line-opacity": 0.18, "line-blur": 6 } });
+      map.addLayer({ id: "trail-line", type: "line", source: "trail", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": C.champagne, "line-width": 4 } });
+      mapRef.current = map;
+      setMapReady(true);
+    });
+    // Dragging the map hands control back to the driver; Recenter re-follows.
+    map.on("dragstart", () => { followingRef.current = false; setFollowing(false); });
+    map.on("error", () => setMapFailed(true));
+    return () => { map.remove(); mapRef.current = null; markerRef.current = null; };
+  }, []);
+
+  // New point(s): redraw the trail, move the position dot, follow it.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const coords = shown.map(p => [p.lng, p.lat]);
+    map.getSource("trail")?.setData({ type: "Feature", geometry: { type: "LineString", coordinates: coords } });
+    if (!coords.length) return;
+    const here = coords[coords.length - 1];
+    if (!markerRef.current) {
+      const el = document.createElement("div");
+      el.style.cssText = `width:20px;height:20px;border-radius:50%;background:${C.red};border:3px solid #fff;animation:ccLivePulse 1.8s infinite;`;
+      markerRef.current = new window.mapboxgl.Marker({ element: el }).setLngLat(here).addTo(map);
+      map.jumpTo({ center: here, zoom: 14 }); // first fix: snap there, then glide from now on
+    } else {
+      markerRef.current.setLngLat(here);
+      if (followingRef.current) map.easeTo({ center: here, duration: 1500 });
+    }
+  }, [shown.length, mapReady]);
+
+  const recenter = () => {
+    const map = mapRef.current;
+    followingRef.current = true;
+    setFollowing(true);
+    if (map && shown.length) map.easeTo({ center: [shown[shown.length - 1].lng, shown[shown.length - 1].lat], zoom: Math.max(map.getZoom(), 13), duration: 800 });
+  };
+
+  const handleStop = () => {
+    if (!stopArmed) { setStopArmed(true); return; }
+    setStopArmed(false);
+    onStop();
+  };
+
+  const gpsQuiet = fixAgeSec != null && fixAgeSec > 75;
+  const inHomeZone = pts.length > 0 && shown.length === 0;
+  const statusColor = last == null ? C.champagne : gpsQuiet ? "#e6a23c" : "#4caf50";
+  const statusText = last == null
+    ? "Waiting for a GPS fix…"
+    : gpsQuiet
+      ? `No GPS fix for ${fixAgeSec}s — is the phone locked, or another app in front?`
+      : `GPS OK · last fix ${fixAgeSec}s ago`;
+
+  const stat = (label, value) => (
+    <div style={{ flex: 1, textAlign: "center" }}>
+      <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 26, fontWeight: 700, color: C.bone, lineHeight: 1.1 }}>{value}</div>
+      <div style={{ fontSize: 9, color: C.dim, textTransform: "uppercase", letterSpacing: "0.14em", marginTop: 2 }}>{label}</div>
+    </div>
+  );
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 260, background: C.midnight }}>
+      <style>{`@keyframes ccLivePulse { 0% { box-shadow: 0 0 0 0 rgba(192,57,43,.65); } 70% { box-shadow: 0 0 0 20px rgba(192,57,43,0); } 100% { box-shadow: 0 0 0 0 rgba(192,57,43,0); } }
+@keyframes ccRecDot { 0%,100% { opacity: 1; } 50% { opacity: .25; } }`}</style>
+      <div ref={mapContainer} style={{ position: "absolute", inset: 0 }} />
+
+      {(mapFailed || shown.length === 0) && (
+        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 40, textAlign: "center", color: C.muted, fontSize: 13, lineHeight: 1.6, pointerEvents: "none" }}>
+          {mapFailed
+            ? "Map unavailable — the trip is still recording."
+            : inHomeZone
+              ? "You're inside your home privacy zone. The map appears once you're clear of it — the trip is recording."
+              : "Waiting for a GPS fix… make sure Location is allowed for this app."}
+        </div>
+      )}
+
+      {/* Top: recording state + stats */}
+      <div style={{ position: "absolute", top: 0, left: 0, right: 0, padding: "12px 16px 22px", paddingTop: "calc(12px + env(safe-area-inset-top, 0px))", background: "linear-gradient(to bottom, rgba(13,13,13,.94) 0%, rgba(13,13,13,.75) 65%, rgba(13,13,13,0) 100%)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+          <span style={{ width: 10, height: 10, borderRadius: "50%", background: C.red, animation: "ccRecDot 1.2s infinite" }} />
+          <span style={{ fontSize: 12, color: C.bone, fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase" }}>Recording trip</span>
+          <span style={{ flex: 1 }} />
+          <span style={{ fontSize: 11, color: C.muted, maxWidth: "45%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{vehicleName}</span>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {stat("Time", fmtElapsed(now - activeTrip.startedAt))}
+          {stat("Distance", `~${distanceKm.toFixed(1)} km`)}
+          {stat("GPS points", pts.length)}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 12, fontSize: 11, color: gpsQuiet ? "#e6a23c" : C.muted, lineHeight: 1.4, textAlign: "center" }}>
+          <span style={{ width: 7, height: 7, borderRadius: "50%", background: statusColor, flexShrink: 0 }} />
+          {statusText}
+        </div>
+      </div>
+
+      {/* Recenter (only after the driver has dragged the map away) */}
+      {!following && shown.length > 0 && (
+        <button onClick={recenter} style={{ position: "absolute", right: 16, bottom: "calc(112px + env(safe-area-inset-bottom, 0px))", background: C.midnight, border: `1px solid ${C.champagne}`, borderRadius: 24, padding: "9px 16px", color: C.champagne, fontFamily: "'Josefin Sans', sans-serif", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.1em", cursor: "pointer", boxShadow: "0 4px 18px #000a" }}>
+          ⌖ Recenter
+        </button>
+      )}
+
+      {/* Bottom: minimise / stop */}
+      <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "24px 16px 16px", paddingBottom: "calc(16px + env(safe-area-inset-bottom, 0px))", background: "linear-gradient(to top, rgba(13,13,13,.96) 0%, rgba(13,13,13,.8) 65%, rgba(13,13,13,0) 100%)" }}>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Btn variant="ghost" size="lg" onClick={onMinimise} style={{ flex: 1 }}>Minimise</Btn>
+          <Btn variant={stopArmed ? "primary" : "danger"} size="lg" onClick={handleStop} style={{ flex: 2 }}>
+            {stopArmed ? "Tap again to stop" : "Stop Trip"}
+          </Btn>
+        </div>
+        <div style={{ fontSize: 10, color: C.dim, textAlign: "center", marginTop: 10 }}>
+          Recording keeps running if you minimise. Screen stays awake while a trip records.
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // Session 17 — mirrors ActiveTripBanner exactly: a lost AddRoadModal draft
 // is the same "survives a reload mid-flow" failure mode as a lost trail
 // recording, so it gets the same visual treatment and the same distinction
@@ -4011,7 +4199,7 @@ const RoadDraftBanner = ({ draft, onResume, onDiscard }) => {
   );
 };
 
-const ActiveTripBanner = ({ activeTrip, vehicleName, onStop, onDiscard, onLiveLog }) => {
+const ActiveTripBanner = ({ activeTrip, vehicleName, onStop, onDiscard, onLiveLog, onLiveMap }) => {
   if (!activeTrip) return null;
   const elapsedMin = Math.max(0, Math.round((Date.now() - activeTrip.startedAt) / 60000));
   return (
@@ -4025,6 +4213,7 @@ const ActiveTripBanner = ({ activeTrip, vehicleName, onStop, onDiscard, onLiveLo
           {activeTrip.points.length} point{activeTrip.points.length !== 1 ? "s" : ""}{!activeTrip.stopped ? ` · ${elapsedMin} min so far` : ""}
         </div>
       </div>
+      {!activeTrip.stopped && onLiveMap && <Btn size="sm" variant="blue" onClick={onLiveMap}>🗺 Map</Btn>}
       <Btn size="sm" variant="ghost" onClick={onLiveLog}>Live Log</Btn>
       {activeTrip.stopped && <Btn size="sm" variant="ghost" onClick={onDiscard}>Discard</Btn>}
       <Btn size="sm" onClick={onStop}>{activeTrip.stopped ? "Retry Save" : "Stop Trip"}</Btn>
@@ -5854,6 +6043,7 @@ const App = () => {
   // rather than letting a 0-point trail save invisibly.
   const [tripSavedNotice, setTripSavedNotice] = useState(null);
   const [showLiveLog, setShowLiveLog] = useState(false);
+  const [showLiveMap, setShowLiveMap] = useState(false); // Session 30: full-screen live map while a trip records
   const tripSavedTimerRef = useRef(null);
   const gpsIntervalRef = useRef(null);
   // Session 15b: a dedicated second device (e.g. Chasin' Curves mounted for
@@ -6223,7 +6413,14 @@ const App = () => {
     pollAndAppend(); // grab a first fix immediately rather than waiting a full interval
     beginPolling();
     requestWakeLock();
+    setShowLiveMap(true); // Session 30: open the full-screen live map so it's obvious a trip is recording
   }, [pollAndAppend, beginPolling, requestWakeLock]);
+
+  // The live map only makes sense while a trip is actively recording — close
+  // it when the trip is stopped, saved, or discarded.
+  useEffect(() => {
+    if (!activeTrip || activeTrip.stopped) setShowLiveMap(false);
+  }, [activeTrip]);
 
   // Resume polling (and the wake lock) on reload if a trip was left running
   // mid-trip — e.g. the tab was fully discarded and reopened after a long
@@ -6428,6 +6625,7 @@ const App = () => {
         onStop={handleStopTrip}
         onDiscard={discardTrail}
         onLiveLog={() => setShowLiveLog(true)}
+        onLiveMap={() => setShowLiveMap(true)}
       />
       <RoadDraftBanner
         draft={roadDraft}
@@ -6438,6 +6636,18 @@ const App = () => {
         }}
         onDiscard={() => { setStoredRoadDraft(currentUser.id, null); setRoadDraft(null); }}
       />
+      {showLiveMap && activeTrip && !activeTrip.stopped && (
+        <LiveMapView
+          activeTrip={activeTrip}
+          vehicleName={(() => {
+            const v = currentUser.garage?.find(v => v.id === activeTrip.vehicleId);
+            return v ? [v.year, v.make, v.model].filter(Boolean).join(" ") || "Vehicle" : "Vehicle";
+          })()}
+          member={currentUser}
+          onMinimise={() => setShowLiveMap(false)}
+          onStop={handleStopTrip}
+        />
+      )}
       {showLiveLog && activeTrip && (
         <LiveTripView
           activeTrip={activeTrip}
