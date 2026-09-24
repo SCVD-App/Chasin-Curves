@@ -2063,6 +2063,28 @@ const correctBBoxAspect = (bbox, targetAspect) => {
   return bbox;
 };
 
+// Session 30: the invite poster has text over the top (the "Chasin' Curves"
+// title) and the bottom (run name, date, roads, host) — a route framed to
+// the whole card ran under both, and on a real invite the finish dot landed
+// on top of the date line. This frames the route inside the clear band
+// between them instead: it fits the bbox to the band's aspect ratio, then
+// extends it up and down in proportion to the two margins, so the final bbox
+// still matches the full card's aspect exactly (the base map is requested
+// and projected with it, so everything stays aligned).
+const INVITE_MAP_TOP_MARGIN = 230;    // px of the 1350px card taken by the title block
+const INVITE_MAP_BOTTOM_MARGIN = 300; // px taken by the run name / details block
+const fitBBoxToSafeBand = (bbox, cardW, cardH, topPx, bottomPx) => {
+  const bandH = cardH - topPx - bottomPx;
+  const fitted = correctBBoxAspect(bbox, cardW / bandH);
+  const yMin = mercatorY(fitted.minLat), yMax = mercatorY(fitted.maxLat);
+  const span = yMax - yMin;
+  return {
+    minLng: fitted.minLng, maxLng: fitted.maxLng,
+    minLat: mercatorYInverse(yMin - span * (bottomPx / bandH)),
+    maxLat: mercatorYInverse(yMax + span * (topPx / bandH)),
+  };
+};
+
 // Projects a lat/lng into card pixel space using the SAME bbox the base
 // map was requested with, so the hand-drawn route lines up with the roads
 // Mapbox rendered underneath it.
@@ -2627,7 +2649,7 @@ const drawTripInviteCard = async ({ title, dateLabel, timeLabel, waypoints, vehi
   }
 
   if (hasWaypoints) {
-    bbox = correctBBoxAspect(computeBBox(routePts ? [...waypoints, ...routePts] : waypoints), CARD_W / CARD_H);
+    bbox = fitBBoxToSafeBand(computeBBox(routePts ? [...waypoints, ...routePts] : waypoints), CARD_W, CARD_H, INVITE_MAP_TOP_MARGIN, INVITE_MAP_BOTTOM_MARGIN);
     const mapUrl = buildBaseMapUrl(bbox);
     const mapImg = await loadImageEl(mapUrl, "base map");
     if (mapImg) {
