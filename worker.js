@@ -647,8 +647,16 @@ function renderRunNotFoundHtml() {
 
 function renderRunPageHtml({ trip, organiserDisplayName, vehiclePhotoUrl, vehicleLabel, roadNames, goingCount, maybeCount, waypointOverlay }) {
   const title = escapeHtml(trip.title || 'A Chasin\u2019 Curves run');
-  const dateLabel = fmtDateLabel(trip.date);
+  // Session 30: escaped — fmtDateLabel hands back the raw string when it
+  // can't parse it as a date, and trip.date is client-supplied text on a
+  // public, unauthenticated page.
+  const dateLabel = escapeHtml(fmtDateLabel(trip.date));
   const timeLabel = trip.time ? escapeHtml(trip.time) : '';
+  // Date and time are optional when a run is planned (an initial invite,
+  // details still to be agreed) — say so instead of showing nothing.
+  const whenLine = dateLabel
+    ? `${dateLabel} \u00b7 ${timeLabel || 'time to be confirmed'}`
+    : (timeLabel ? `${timeLabel} \u00b7 date to be confirmed` : 'Date and time to be confirmed');
   // Session 20: a run with waypoints derives its meeting/end point display
   // from them (first/last) rather than the old free-text meetingPoint field
   // — the planner form never actually collected that field, so waypoints
@@ -754,7 +762,7 @@ ${heroUrl ? `<meta property="og:image" content="${escapeHtml(heroUrl)}"/>` : ''}
       <span class="badge" style="background:${status.color};">${status.label}</span>
       ${cancelBanner}
       <h1>${title}</h1>
-      ${dateLabel ? `<div class="meta">${dateLabel}${timeLabel ? ` \u00b7 ${timeLabel}` : ''}</div>` : ''}
+      <div class="meta">${whenLine}</div>
       ${meetingPoint ? `<div class="meta dim">Meeting at ${meetingPoint}</div>` : ''}
       ${endPoint ? `<div class="meta dim">Finishing at ${endPoint}</div>` : ''}
       ${vehicle ? `<div class="meta dim">Look for: ${vehicle}</div>` : ''}

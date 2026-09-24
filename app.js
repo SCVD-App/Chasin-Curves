@@ -2503,14 +2503,17 @@ const planInviteRoute = (waypoints, roads) => {
 const fetchDirectionsLeg = async (stops) => {
   if (!stops || stops.length < 2 || stops.length > INVITE_ROUTE_MAX_STOPS) return null;
   const coords = stops.map(p => `${p.lng.toFixed(5)},${p.lat.toFixed(5)}`).join(";");
+  let lastFailure = "";
   for (const exclude of ["&exclude=motorway", ""]) {
     try {
       const res = await fetch(`https://api.mapbox.com/directions/v5/mapbox/driving/${coords}?geometries=geojson&overview=full${exclude}&access_token=${MAPBOX_TOKEN}`);
       const data = await res.json();
       const geom = data?.routes?.[0]?.geometry?.coordinates;
       if (data?.code === "Ok" && geom?.length > 1) return geom.map(([lng, lat]) => ({ lng, lat }));
-    } catch { /* try the next option, then fall back to a straight line */ }
+      lastFailure = data?.code ? `${data.code}${data.message ? `: ${data.message}` : ""}` : "no route returned";
+    } catch (e) { lastFailure = e?.message || "request failed"; }
   }
+  console.warn(`[Chasin' Curves] Directions failed for a leg of the invite route (${lastFailure}) — drawing it as a straight line.`);
   return null;
 };
 
@@ -2531,9 +2534,17 @@ const fetchInviteRoute = async (items) => {
     else run.push(it.road.a, it.road.b);
   }
   flush();
-  await Promise.all(segs.map(async s => { if (s.run) s.geom = (await fetchDirectionsLeg(s.run)) || s.run; }));
+  let legsFailed = 0;
+  await Promise.all(segs.map(async s => {
+    if (!s.run) return;
+    const geom = await fetchDirectionsLeg(s.run);
+    if (geom) s.geom = geom; else { s.geom = s.run; legsFailed++; }
+  }));
   const out = segs.flatMap(s => s.geom);
-  return out.length >= 2 ? out : null;
+  if (out.length < 2) return null;
+  out.legsFailed = legsFailed; // read by drawTripInviteCard to tell the person when part of the route is a straight line
+  out.legsTotal = segs.filter(s => s.run).length;
+  return out;
 };
 
 // Session 29: "Trip Invite" poster — a shareable image for a planned run,
@@ -2585,11 +2596,14 @@ const drawTripInviteCard = async ({ title, dateLabel, timeLabel, waypoints, vehi
   // Session 30: work out the drivable route through the stops + selected
   // roads first, so the map frames the whole route, not just the stops.
   let routePts = null;
+  let routeNote = ""; // "none" | "partial" — surfaced on the invite screen
   if (hasWaypoints) {
     routePts = await Promise.race([
       fetchInviteRoute(planInviteRoute(waypoints, roadsForRoute)),
       new Promise(resolve => setTimeout(() => resolve(null), 6000)),
     ]);
+    if (!routePts) routeNote = "none";
+    else if (routePts.legsFailed > 0) routeNote = routePts.legsFailed >= routePts.legsTotal ? "none" : "partial";
   }
 
   if (hasWaypoints) {
@@ -2668,7 +2682,18 @@ const drawTripInviteCard = async ({ title, dateLabel, timeLabel, waypoints, vehi
       ctx.beginPath();
       ctx.arc(x, y, 7, 0, Math.PI * 2);
       ctx.fill();
-      if (y < titleZoneTop) shadowText(w.label, x + 16, y + 8);
+      if (y < titleZoneTop) {
+        // Session 30: a stop near the right-hand edge (Caloundra, on a
+        // real invite) had its label cut off by the card edge — flip those
+        // labels to the left of their dot instead.
+        if (x + 16 + ctx.measureText(w.label).width > CARD_W - 24) {
+          ctx.textAlign = "right";
+          shadowText(w.label, x - 16, y + 8);
+          ctx.textAlign = "left";
+        } else {
+          shadowText(w.label, x + 16, y + 8);
+        }
+      }
     });
     ctx.textAlign = "center";
   }
@@ -2700,9 +2725,15 @@ const drawTripInviteCard = async ({ title, dateLabel, timeLabel, waypoints, vehi
   ctx.font = `700 ${titleSize}px 'Cormorant Garamond'`;
   shadowText(title, cx, midY);
 
+  // Session 30: date and time are optional when a run is planned (an
+  // initial invite, details to be sorted with the group) — say so on the
+  // poster instead of leaving a blank line.
+  const whenText = dateLabel
+    ? (timeLabel ? `${dateLabel} · ${timeLabel}` : `${dateLabel} · time TBC`)
+    : (timeLabel ? `${timeLabel} · date TBC` : "Date & time TBC");
   ctx.fillStyle = C.champagneLight;
   ctx.font = "600 30px 'Josefin Sans'";
-  shadowText(dateLabel + (timeLabel ? ` · ${timeLabel}` : ""), cx, midY + 42);
+  shadowText(whenText, cx, midY + 42);
 
   if (hasWaypoints) {
     ctx.fillStyle = "rgba(245,243,238,0.8)";
@@ -2721,7 +2752,7 @@ const drawTripInviteCard = async ({ title, dateLabel, timeLabel, waypoints, vehi
   const bylineParts = [vehicleLabel, organiserDisplayName ? `Hosted by ${organiserDisplayName}` : null, goingCount ? `${goingCount} going` : null].filter(Boolean);
   shadowText(bylineParts.join(" · "), cx, 1312);
 
-  return new Promise(resolve => canvas.toBlob(blob => resolve(blob), "image/png", 0.95));
+  return new Promise(resolve => canvas.toBlob(blob => { if (blob) blob.routeNote = routeNote; resolve(blob); }, "image/png", 0.95));
 };
 
 // Session 16n — "Share My Ride": a brag card for a single garage vehicle,
@@ -4177,12 +4208,33 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
   const [cancelTarget, setCancelTarget] = useState(null);
   const [cancelReason, setCancelReason] = useState("personal");
   const [busyTripId, setBusyTripId] = useState(null);
+  // Session 30: Publish Run used to do NOTHING (no message at all) when the
+  // name or roads were missing, and when the server rejected or failed the
+  // save it closed the form and showed a local-only copy of the run — no
+  // invite, no error, and the run vanished on the next reload. Now missing
+  // details are named on screen, a failed publish keeps the form open with
+  // the reason, and the button locks while publishing (a double tap used to
+  // be able to create the run twice).
+  const [formError, setFormError] = useState("");
+  const [publishing, setPublishing] = useState(false);
 
   const emptyForm = { title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "", waypoints: [] };
   // Closing while editing discards the edit; closing while planning keeps your draft, as before.
-  const closeModal = () => { setShowNew(false); if (editId) { setEditId(null); setForm(emptyForm); } };
+  const closeModal = () => { setFormError(""); setShowNew(false); if (editId) { setEditId(null); setForm(emptyForm); } };
+
+  // What a run needs before it can be published: a name and at least one
+  // road. Date and time are deliberately OPTIONAL — an invite can go out
+  // first as "are you in?" and the details get sorted with the group
+  // afterwards (the invite says "to be confirmed"). Returns a plain-English
+  // message for the first thing missing, or "" if the form is good to go.
+  const runFormProblem = () => {
+    if (!form.title.trim()) return "Give your run a name.";
+    if (form.selectedRoads.length === 0) return "Select at least one road for the run.";
+    return "";
+  };
 
   const startEdit = (trip) => {
+    setFormError("");
     setForm({ title: trip.title || "", date: trip.date || "", time: trip.time || "", selectedRoads: trip.routes || [],
               vehicleId: trip.vehicleId || "", notes: trip.notes || "", waypoints: trip.waypoints || [] });
     setEditId(trip.id);
@@ -4190,7 +4242,9 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
   };
 
   const handleSave = async () => {
-    if (!form.title || form.selectedRoads.length === 0) return;
+    const problem = runFormProblem();
+    if (problem) { setFormError(problem); return; }
+    setFormError("");
     const updates = { title: form.title, date: form.date, time: form.time, routes: form.selectedRoads,
                       vehicleId: form.vehicleId, notes: form.notes, waypoints: form.waypoints };
     try {
@@ -4226,31 +4280,45 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
   };
 
   const handleCreate = async () => {
-    if (!form.title || form.selectedRoads.length === 0) return;
+    if (publishing) return;
+    const problem = runFormProblem();
+    if (problem) { setFormError(problem); return; }
+    setFormError("");
     const trip = {
-      id: Date.now(), title: form.title, date: form.date, time: form.time,
+      id: Date.now(), title: form.title.trim(), date: form.date, time: form.time.trim(),
       routes: form.selectedRoads, vehicleId: form.vehicleId, notes: form.notes,
       waypoints: form.waypoints,
       createdBy: currentUser.id, attendees: [{ memberId: currentUser.id, vehicleId: form.vehicleId }],
       createdAt: new Date().toISOString(),
     };
-    // Session 17: api.postTrip() now hits the server-awarded POST /trips
+    // Session 17: api.postTrip() hits the server-awarded POST /trips
     // (worker.js Session 17) — the old onPointsEarned("plan_trip") call
     // that used to sit here was a straight double-award, removed.
-    // Session 30: once the server has the run, open its invite full-screen
-    // (see openInvite below) rather than dropping back to the list — the
-    // public invite endpoint needs the run to exist server-side, so a run
-    // that only saved locally (offline/failed POST) just returns to the list.
-    let saved = trip, persisted = false;
+    // Session 30: the run is only added, and its invite only opened, once
+    // the server has really saved it (the invite is built from the server's
+    // copy, GET /trips/:id/public). A failed save no longer leaves a
+    // local-only "phantom" run behind — the form stays open with the
+    // reason, so nothing typed is lost. authedFetch only throws on 401/403;
+    // other rejections come back as an {error} body, so check for that too.
+    setPublishing(true);
     try {
       const res = await api.postTrip(trip);
-      if (res.trip) { saved = res.trip; persisted = true; }
-      setTrips(prev => [...prev, saved]);
-      await onRefreshPoints?.();
-    } catch { if (!persisted) setTrips(prev => [...prev, trip]); }
-    setForm({ title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "", waypoints: [] });
-    setShowNew(false);
-    if (persisted) openInvite(saved, true);
+      if (res?.error || !res?.trip) {
+        setFormError(res?.error || "Couldn't publish your run — please try again.");
+        return;
+      }
+      setTrips(prev => [...prev, res.trip]);
+      try { await onRefreshPoints?.(); } catch { /* points refresh is a nicety */ }
+      setForm({ title: "", date: "", time: "", selectedRoads: [], vehicleId: "", notes: "", waypoints: [] });
+      setShowNew(false);
+      openInvite(res.trip, true);
+    } catch (e) {
+      setFormError(e?.authFailed
+        ? "Your session has expired. Sign out and back in, then publish again."
+        : "Couldn't publish — check your connection and try again.");
+    } finally {
+      setPublishing(false);
+    }
   };
 
   // Session 20: geocodes a typed place name (BP Landsborough, Witta, Aussie
@@ -4364,13 +4432,17 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
       if (inviteActiveRef.current !== trip.id) return; // closed while building
       const url = URL.createObjectURL(blob);
       inviteUrlRef.current = url;
-      setInvite(prev => prev && prev.trip.id === trip.id ? { ...prev, status: "ready", url, blob, title: res.title || trip.title } : prev);
+      setInvite(prev => prev && prev.trip.id === trip.id ? { ...prev, status: "ready", url, blob, title: res.title || trip.title, routeNote: blob.routeNote || "" } : prev);
     } catch (e) {
       console.error("[Chasin' Curves] trip invite poster build failed", e);
       // A bad photo URL, a Mapbox hiccup, etc. shouldn't mean the trip
       // can't be shared at all — the screen falls back to the plain link.
       if (inviteActiveRef.current !== trip.id) return;
-      setInvite(prev => prev && prev.trip.id === trip.id ? { ...prev, status: "error" } : prev);
+      // "Run not found" means the server has no record of this run — it only
+      // ever existed on this device (an old failed publish), so there's no
+      // link to share. Say that, rather than the generic picture error.
+      const notSaved = e?.message === "Run not found";
+      setInvite(prev => prev && prev.trip.id === trip.id ? { ...prev, status: notSaved ? "missing" : "error" } : prev);
     }
   };
 
@@ -4508,6 +4580,9 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
             <Input label="Date" value={form.date} onChange={v => setForm(f=>({...f,date:v}))} type="date" />
             <Input label="Departure Time" value={form.time} onChange={v => setForm(f=>({...f,time:v}))} placeholder="07:30" />
           </div>
+          <div style={{ fontSize: 11, color: C.dim, lineHeight: 1.5, marginTop: -6, marginBottom: 14 }}>
+            Date and time are optional — leave them blank to send an initial invite and sort the details out with the group.
+          </div>
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Select Roads *</div>
             {roads.map(r => (
@@ -4555,9 +4630,14 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
             </div>
           </div>
           <Input label="Notes" value={form.notes} onChange={v => setForm(f=>({...f,notes:v}))} placeholder="Pace notes, anything else..." multiline />
+          {formError && (
+            <div style={{ fontSize: 12, color: C.red, background: `${C.red}15`, border: `1px solid ${C.red}44`, borderRadius: 8, padding: "9px 12px", marginTop: 8, lineHeight: 1.5 }}>
+              {formError}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <Btn variant="ghost" onClick={closeModal} style={{ flex: 1 }}>{editId ? "Discard" : "Cancel"}</Btn>
-            <Btn onClick={editId ? handleSave : handleCreate} style={{ flex: 2 }}>{editId ? "Save Changes" : "Publish Run"}</Btn>
+            <Btn onClick={editId ? handleSave : handleCreate} disabled={publishing} style={{ flex: 2 }}>{publishing ? "Publishing…" : (editId ? "Save Changes" : "Publish Run")}</Btn>
           </div>
         </Modal>
       )}
@@ -4605,6 +4685,12 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
             {invite.status === "ready" && (
               <img src={invite.url} alt={`${invite.title} — trip invite`} style={{ maxWidth: "100%", maxHeight: "100%", width: "auto", height: "auto", objectFit: "contain", borderRadius: 10, border: `1px solid ${C.border}`, boxShadow: "0 8px 40px #000a" }} />
             )}
+            {invite.status === "missing" && (
+              <div style={{ textAlign: "center", color: C.muted, fontSize: 13, lineHeight: 1.6, maxWidth: 300 }}>
+                <div style={{ fontSize: 32, marginBottom: 10 }}>⚠️</div>
+                This run never saved to the server, so it has no invite link. It was probably created while offline or signed out. Refresh the app and it will disappear, then publish it again.
+              </div>
+            )}
             {invite.status === "error" && (
               <div style={{ textAlign: "center", color: C.muted, fontSize: 13, lineHeight: 1.6, maxWidth: 300 }}>
                 <div style={{ fontSize: 32, marginBottom: 10 }}>⚠️</div>
@@ -4614,11 +4700,18 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
           </div>
 
           <div style={{ flexShrink: 0, padding: "12px 16px", paddingBottom: "calc(16px + env(safe-area-inset-bottom, 0px))", borderTop: `1px solid ${C.border}`, background: C.midnight }}>
-            <Btn size="lg" onClick={shareInvite} disabled={invite.status === "building"} style={{ width: "100%" }}>
+            {invite.routeNote && (
+              <div style={{ fontSize: 11, color: C.dim, textAlign: "center", lineHeight: 1.5, marginBottom: 10 }}>
+                {invite.routeNote === "none"
+                  ? "The route is drawn as straight lines between stops — the routing service didn't respond."
+                  : "Part of the route is drawn as a straight line — the routing service didn't respond for it."}
+              </div>
+            )}
+            <Btn size="lg" onClick={shareInvite} disabled={invite.status === "building" || invite.status === "missing"} style={{ width: "100%" }}>
               📤 Share invite
             </Btn>
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <Btn size="sm" variant="ghost" onClick={copyInviteLink} style={{ flex: 1 }}>Copy link</Btn>
+              {invite.status !== "missing" && <Btn size="sm" variant="ghost" onClick={copyInviteLink} style={{ flex: 1 }}>Copy link</Btn>}
               {invite.status === "ready" && <Btn size="sm" variant="ghost" onClick={saveInviteImage} style={{ flex: 1 }}>Save image</Btn>}
             </div>
           </div>
