@@ -2433,6 +2433,109 @@ const fitText = (ctx, text, maxWidth, startSize, minSize, fontSpec) => {
   return size;
 };
 
+// Session 30: the invite poster's dashed route used to be a straight line
+// through the run's typed-in stops only — the roads picked for the run
+// contributed their NAMES to the poster but no geometry at all, so a run
+// from Newcastle to Sydney "via the Old Pacific Highway" drew as one dead
+// straight line. Now the route is built in pieces:
+//  - each selected road is slotted into the stop list where it adds the
+//    least detour (and is entered from whichever end is closer);
+//  - a road added from a trip's GPS trail carries its real driven line
+//    (`path`, fetched from GET /roads/:id/path) and that exact line is
+//    drawn for it;
+//  - everywhere else — the gaps between stops, and any road with no
+//    stored path (the seeded roads, roads typed in by hand) — Mapbox
+//    Directions draws the drivable route between the points. motorway is
+//    excluded on the first attempt so a run through an old highway follows
+//    the old highway instead of the freeway beside it; if that finds no
+//    route it retries without the exclusion, and if Directions fails for
+//    a piece that piece falls back to a straight line, so an invite never
+//    fails to build because of this. The whole route step is also capped at
+//    6 seconds (see drawTripInviteCard).
+const INVITE_ROUTE_MAX_STOPS = 25; // Mapbox Directions' waypoint limit
+
+// The driven line stored for a road added from a trip — [[lat, lng], ...],
+// or null if the road has none (or the fetch fails; the poster just uses
+// Directions for it instead).
+const fetchRoadPath = async (roadId) => {
+  try {
+    const res = await fetch(`${API}/roads/${roadId}/path`);
+    const data = await res.json();
+    const pts = data?.path;
+    return Array.isArray(pts) && pts.length >= 2 ? pts : null;
+  } catch { return null; }
+};
+
+// Returns an ordered list of items: { pt: {lat,lng} } for a typed stop, or
+// { road: { a, b, path } } for a selected road (a → b in the direction the
+// run travels it; path, if any, already oriented the same way).
+const planInviteRoute = (waypoints, roads) => {
+  const items = waypoints.map(w => ({ pt: { lat: w.lat, lng: w.lng } }));
+  const dist = (a, b) => haversineKm(a.lat, a.lng, b.lat, b.lng);
+  const entry = it => it.pt || it.road.a;
+  const exit = it => it.pt || it.road.b;
+  for (const road of roads || []) {
+    if (!road?.startCoords || !road?.endCoords) continue;
+    // Roads added with the coordinate boxes left empty are saved as 0,0 — not a real place.
+    if (!(road.startCoords.lat || road.startCoords.lng) || !(road.endCoords.lat || road.endCoords.lng)) continue;
+    const used = items.reduce((n, it) => n + (it.pt ? 1 : 2), 0);
+    if (used + 2 > INVITE_ROUTE_MAX_STOPS) break;
+    const s = { lat: road.startCoords.lat, lng: road.startCoords.lng };
+    const e = { lat: road.endCoords.lat, lng: road.endCoords.lng };
+    let best = null;
+    for (let i = 0; i < items.length - 1; i++) {
+      const from = exit(items[i]), to = entry(items[i + 1]);
+      for (const rev of [false, true]) {
+        const a = rev ? e : s, b = rev ? s : e;
+        const added = dist(from, a) + dist(a, b) + dist(b, to) - dist(from, to);
+        if (!best || added < best.added) best = { i, a, b, rev, added };
+      }
+    }
+    if (!best) continue;
+    let path = Array.isArray(road.path) && road.path.length >= 2 ? road.path.map(([lat, lng]) => ({ lat, lng })) : null;
+    if (path && best.rev) path = path.slice().reverse();
+    items.splice(best.i + 1, 0, { road: { a: best.a, b: best.b, path } });
+  }
+  return items;
+};
+
+// Mapbox Directions through a run of points → [{lat,lng}...], or null.
+const fetchDirectionsLeg = async (stops) => {
+  if (!stops || stops.length < 2 || stops.length > INVITE_ROUTE_MAX_STOPS) return null;
+  const coords = stops.map(p => `${p.lng.toFixed(5)},${p.lat.toFixed(5)}`).join(";");
+  for (const exclude of ["&exclude=motorway", ""]) {
+    try {
+      const res = await fetch(`https://api.mapbox.com/directions/v5/mapbox/driving/${coords}?geometries=geojson&overview=full${exclude}&access_token=${MAPBOX_TOKEN}`);
+      const data = await res.json();
+      const geom = data?.routes?.[0]?.geometry?.coordinates;
+      if (data?.code === "Ok" && geom?.length > 1) return geom.map(([lng, lat]) => ({ lng, lat }));
+    } catch { /* try the next option, then fall back to a straight line */ }
+  }
+  return null;
+};
+
+// Stitches the whole route: stored driven paths as-is, Directions for the
+// stretches between them. Returns [{lat,lng}...] or null.
+const fetchInviteRoute = async (items) => {
+  if (!items || items.length < 2) return null;
+  const segs = []; // { geom } (ready) or { run } (needs Directions)
+  let run = [];
+  const flush = () => {
+    if (run.length >= 2) segs.push({ run });
+    else if (run.length === 1) segs.push({ geom: run.slice() });
+    run = [];
+  };
+  for (const it of items) {
+    if (it.pt) run.push(it.pt);
+    else if (it.road.path) { run.push(it.road.a); flush(); segs.push({ geom: it.road.path }); run = [it.road.b]; }
+    else run.push(it.road.a, it.road.b);
+  }
+  flush();
+  await Promise.all(segs.map(async s => { if (s.run) s.geom = (await fetchDirectionsLeg(s.run)) || s.run; }));
+  const out = segs.flatMap(s => s.geom);
+  return out.length >= 2 ? out : null;
+};
+
 // Session 29: "Trip Invite" poster — a shareable image for a planned run,
 // sibling to drawTripCard above rather than a rebuild of anything. Reuses
 // the exact same Mercator/bbox helpers (computeBBox, correctBBoxAspect,
@@ -2444,7 +2547,7 @@ const fitText = (ctx, text, maxWidth, startSize, minSize, fontSpec) => {
 // an invite, not a record."  Data comes from GET /trips/:id/public — the
 // same no-auth endpoint the /run/:id page itself calls — so this works
 // whether the sharer is the trip's organiser or someone else re-sharing it.
-const drawTripInviteCard = async ({ title, dateLabel, timeLabel, waypoints, vehicleLabel, vehiclePhotoUrl, roadNames, organiserDisplayName, goingCount }) => {
+const drawTripInviteCard = async ({ title, dateLabel, timeLabel, waypoints, vehicleLabel, vehiclePhotoUrl, roadNames, roadsForRoute, organiserDisplayName, goingCount }) => {
   await ensureFontsLoaded();
   const canvas = document.createElement("canvas");
   canvas.width = CARD_W; canvas.height = CARD_H;
@@ -2479,8 +2582,18 @@ const drawTripInviteCard = async ({ title, dateLabel, timeLabel, waypoints, vehi
 
   // --- Layer 2: base map, faded toward the edges — same masking approach
   // as drawTripCard, bbox computed from waypoints instead of a GPS trail ---
+  // Session 30: work out the drivable route through the stops + selected
+  // roads first, so the map frames the whole route, not just the stops.
+  let routePts = null;
   if (hasWaypoints) {
-    bbox = correctBBoxAspect(computeBBox(waypoints), CARD_W / CARD_H);
+    routePts = await Promise.race([
+      fetchInviteRoute(planInviteRoute(waypoints, roadsForRoute)),
+      new Promise(resolve => setTimeout(() => resolve(null), 6000)),
+    ]);
+  }
+
+  if (hasWaypoints) {
+    bbox = correctBBoxAspect(computeBBox(routePts ? [...waypoints, ...routePts] : waypoints), CARD_W / CARD_H);
     const mapUrl = buildBaseMapUrl(bbox);
     const mapImg = await loadImageEl(mapUrl, "base map");
     if (mapImg) {
@@ -2520,9 +2633,12 @@ const drawTripInviteCard = async ({ title, dateLabel, timeLabel, waypoints, vehi
   // SAME bbox the base map was requested with, so it lines up correctly. ---
   if (hasWaypoints && bbox) {
     const pts = waypoints.map(w => projectPoint(w.lng, w.lat, bbox, CARD_W, CARD_H));
+    // The dashed line follows the drivable route when Directions found one
+    // (Session 30), otherwise the old straight line between the stops.
+    const linePts = routePts ? routePts.map(w => projectPoint(w.lng, w.lat, bbox, CARD_W, CARD_H)) : pts;
     ctx.beginPath();
-    ctx.moveTo(pts[0][0], pts[0][1]);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.moveTo(linePts[0][0], linePts[0][1]);
+    for (let i = 1; i < linePts.length; i++) ctx.lineTo(linePts[i][0], linePts[i][1]);
     ctx.strokeStyle = C.champagne;
     ctx.lineWidth = 5;
     ctx.lineCap = "round";
@@ -3154,6 +3270,7 @@ const TrailViewerModal = ({ entry, vehicleName, member, onClose }) => {
 //    blank for the member to type, same as before. The member still
 //    reviews everything in the Add a Road form before submitting.
 const ROAD_TIME_MAX_GAP_MS = 5 * 60 * 1000; // ~15x the 20s GPS poll interval
+const ROAD_PATH_MAX_POINTS = 300; // stored with the road; worker.js thins anything bigger than 400
 const AU_STATE_CODES = ["QLD", "NSW", "VIC", "TAS", "SA", "WA", "NT", "ACT"];
 
 const trailSegmentDuration = (seg) => {
@@ -3212,6 +3329,54 @@ const suggestRoadName = async (seg) => {
     const best = Object.entries(tally).sort((a, b) => b[1] - a[1])[0];
     return best && best[1] >= 3 ? best[0] : "";
   } catch { return ""; }
+};
+
+// Session 30: the driven line of the picked section, stored with the road
+// (worker.js keeps it under its own key, not in the roads list) so run
+// invites can draw the road's real shape. Douglas–Peucker simplification
+// with a tolerance that widens until it fits ROAD_PATH_MAX_POINTS — GPS
+// fixes are already ~500m apart at highway speed, so on a long section
+// this mostly just thins the dead-straight stretches. Returns
+// [[lat, lng], ...] at 5dp (~1m) — deliberately NO timestamps, so nothing
+// about when or how fast you drove is published with the road. The trail
+// this comes from is already privacy-clipped around the member's home.
+const simplifyTrailPath = (seg, maxPoints = ROAD_PATH_MAX_POINTS) => {
+  const n = seg.length;
+  const r5 = v => Math.round(v * 1e5) / 1e5;
+  if (n <= 2) return seg.map(p => [r5(p.lat), r5(p.lng)]);
+  const cosLat = Math.cos(seg[0].lat * Math.PI / 180);
+  const xy = seg.map(p => [p.lng * 111320 * cosLat, p.lat * 110540]); // metres, local flat projection
+  const distToSeg = (p, a, b) => {
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const len2 = dx * dx + dy * dy;
+    let t = len2 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
+  };
+  const simplify = (tol) => {
+    const keep = new Uint8Array(n);
+    keep[0] = keep[n - 1] = 1;
+    const stack = [[0, n - 1]];
+    while (stack.length) {
+      const [i, j] = stack.pop();
+      let maxD = -1, idx = -1;
+      for (let k = i + 1; k < j; k++) {
+        const d = distToSeg(xy[k], xy[i], xy[j]);
+        if (d > maxD) { maxD = d; idx = k; }
+      }
+      if (maxD > tol) { keep[idx] = 1; stack.push([i, idx], [idx, j]); }
+    }
+    const out = [];
+    for (let k = 0; k < n; k++) if (keep[k]) out.push(k);
+    return out;
+  };
+  let tol = 8, idxs = simplify(tol);
+  while (idxs.length > maxPoints && tol < 1000) { tol *= 1.5; idxs = simplify(tol); }
+  if (idxs.length > maxPoints) { // still too many (pathological trail) — thin evenly
+    const step = (idxs.length - 1) / (maxPoints - 1);
+    idxs = Array.from({ length: maxPoints }, (_, i) => idxs[Math.round(i * step)]);
+  }
+  return idxs.map(k => [r5(seg[k].lat), r5(seg[k].lng)]);
 };
 
 const suggestRoadDetails = async (seg) => {
@@ -3357,6 +3522,7 @@ const RoadSegmentPicker = ({ trail, onConfirm, onCancel }) => {
       startLat: String(first.lat), startLng: String(first.lng),
       endLat: String(last.lat), endLng: String(last.lng),
       distance: `${segmentKm.toFixed(1)}km`,
+      path: simplifyTrailPath(segment),
       _prefilledFromTrip: true,
     };
     const duration = trailSegmentDuration(segment);
@@ -4176,7 +4342,12 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
     try {
       const res = await fetch(`${API}/trips/${trip.id}/public`).then(r => r.json());
       if (res.error) throw new Error(res.error);
-      const roadNames = (res.routes || []).map(id => roads.find(r => r.id === id)?.name).filter(Boolean);
+      const selectedRoads = (res.routes || []).map(id => roads.find(r => r.id === id)).filter(Boolean);
+      const roadNames = selectedRoads.map(r => r.name);
+      // Roads added from a trip's GPS trail have their driven line stored
+      // separately (GET /roads/:id/path) — pull it so the poster can draw
+      // that exact line instead of a Directions approximation.
+      const roadsForRoute = await Promise.all(selectedRoads.map(async r => (r.hasPath ? { ...r, path: await fetchRoadPath(r.id) } : r)));
       const blob = await drawTripInviteCard({
         title: res.title,
         dateLabel: res.date ? fmtDate(res.date) : "",
@@ -4185,6 +4356,7 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
         vehicleLabel: res.vehicleLabel,
         vehiclePhotoUrl: res.vehiclePhotoUrl,
         roadNames,
+        roadsForRoute,
         organiserDisplayName: res.organiserDisplayName,
         goingCount: res.goingCount,
       });
@@ -4940,8 +5112,18 @@ const AddRoadModal = ({ onClose, onAdd, currentUser, initialValues }) => {
 
   const handleSubmit = () => {
     if (!form.name || !form.region) return;
+    // Session 30: a road added from a trip carries the driven line of the
+    // picked section (`path`, see simplifyTrailPath). It's only kept if the
+    // start/end boxes still match it — if someone has since typed different
+    // coordinates, the stored line would be a different road's shape.
+    const { path: formPath, ...formRest } = form;
+    const sLat = parseFloat(form.startLat) || 0, sLng = parseFloat(form.startLng) || 0;
+    const eLat = parseFloat(form.endLat) || 0, eLng = parseFloat(form.endLng) || 0;
+    const nearPt = (pt, lat, lng) => Array.isArray(pt) && haversineKm(pt[0], pt[1], lat, lng) < 0.1;
+    const pathOk = Array.isArray(formPath) && formPath.length >= 2
+      && nearPt(formPath[0], sLat, sLng) && nearPt(formPath[formPath.length - 1], eLat, eLng);
     onAdd({
-      id: Date.now(), ...form,
+      id: Date.now(), ...formRest, ...(pathOk ? { path: formPath } : {}),
       country: form.country || "AU",
       state: (form.country || "AU") === "AU" ? form.state : "",
       startCoords: { lat: parseFloat(form.startLat)||0, lng: parseFloat(form.startLng)||0 },
@@ -4970,6 +5152,11 @@ const AddRoadModal = ({ onClose, onAdd, currentUser, initialValues }) => {
   return (
     <Modal title="Add a Road" subtitle={form._prefilledFromTrip ? "Prefilled from your drive · +100 points" : "Share a road worth chasing · +100 points"} onClose={onClose} wide>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+        {Array.isArray(form.path) && form.path.length >= 2 && (
+          <div style={{ gridColumn: "1/-1", fontSize: 11, color: C.dim, lineHeight: 1.5, marginBottom: 12 }}>
+            📍 The line you drove on this section is saved with the road so run invites can draw its real shape. Only the section you picked is shared — no times or speeds.
+          </div>
+        )}
         <div style={{ gridColumn: "1/-1" }}><Input label="Road Name *" value={form.name} onChange={v=>set("name",v)} placeholder="e.g. Kenilworth–Maleny Road" /></div>
         <Input label="Region *" value={form.region} onChange={v=>set("region",v)} placeholder="Sunshine Coast Hinterland" />
         <div>

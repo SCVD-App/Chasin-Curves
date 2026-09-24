@@ -146,7 +146,22 @@
 //             the specific run they were invited to rather than a
 //             generic pitch. No other worker.js change this session —
 //             the splash page itself lives entirely in app.js.
-// Endpoints: 39 total
+// Session 30: Road paths. A road added from a trip's GPS trail (app.js
+//             RoadSegmentPicker) can now carry the driven line of the
+//             picked section, so run invites can draw the road's real
+//             shape instead of a routing approximation. The line lives
+//             under its own KV key (roadpath:{id}) rather than inside the
+//             single `roads` array — that array is fetched whole by every
+//             client on every load, and a few hundred points per road
+//             would bloat it fast. The road record just gets a
+//             server-set `hasPath: true`; GET /roads/:id/path (public,
+//             same as GET /roads) serves the line. cleanRoadPath()
+//             validates and caps whatever the client sends — a bad or
+//             oversized path is dropped and the road is still saved, it
+//             never blocks adding a road. `path` / `hasPath` are stripped
+//             from PUT /roads/:id, so a path can only ever be attached at
+//             creation, and a client can't forge hasPath.
+// Endpoints: 40 total
 //
 // Secrets required in Cloudflare dashboard:
 //   RESEND_API_KEY        ← re_... from resend.com dashboard (already in use for Mic Drop)
@@ -236,6 +251,40 @@ function parseGarage(raw) {
     if (parsed && parsed.garage && Array.isArray(parsed.garage.garage)) return parsed.garage.garage;
     return [];
   } catch { return []; }
+}
+
+// ── ROAD PATHS — Session 30 ──────────────────────────────────────────────
+// Accepts [[lat, lng], ...] (or [{lat, lng}, ...]), returns a cleaned
+// [[lat, lng], ...] at 5dp (~1m) with consecutive duplicates removed and at
+// most ROAD_PATH_MAX_POINTS points, or null if it isn't a usable path.
+// Timestamps and any other fields are discarded on purpose — only the
+// shape of the road is stored.
+const ROAD_PATH_MAX_POINTS = 400;   // stored cap per road
+const ROAD_PATH_MAX_INPUT = 3000;   // anything bigger than this is refused outright
+
+function cleanRoadPath(raw) {
+  if (!Array.isArray(raw) || raw.length < 2 || raw.length > ROAD_PATH_MAX_INPUT) return null;
+  const pts = [];
+  for (const p of raw) {
+    let lat, lng;
+    if (Array.isArray(p)) { lat = p[0]; lng = p[1]; }
+    else if (p && typeof p === 'object') { lat = p.lat; lng = p.lng; }
+    else return null;
+    if (typeof lat !== 'number' || typeof lng !== 'number') return null;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+    const la = Math.round(lat * 1e5) / 1e5;
+    const ln = Math.round(lng * 1e5) / 1e5;
+    const last = pts[pts.length - 1];
+    if (last && last[0] === la && last[1] === ln) continue;
+    pts.push([la, ln]);
+  }
+  if (pts.length < 2) return null;
+  if (pts.length <= ROAD_PATH_MAX_POINTS) return pts;
+  // Too many points: thin evenly, always keeping the first and last.
+  const out = [];
+  const step = (pts.length - 1) / (ROAD_PATH_MAX_POINTS - 1);
+  for (let i = 0; i < ROAD_PATH_MAX_POINTS; i++) out.push(pts[Math.round(i * step)]);
+  return out;
 }
 
 const R2_PUBLIC_BASE = 'https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev';
@@ -863,15 +912,28 @@ export default {
         // the most points would have worked against that. See handoff.md
         // for the still-unbuilt points-redemption mechanic this implies.
         const body = await request.json();
+        // Session 30: the driven line (if any) is pulled out of the body
+        // here — it's stored under its own key below, never inside the
+        // roads array — and hasPath is server-set only, so a client can't
+        // claim a path it didn't send (or that failed validation).
+        const { path: rawRoadPath, hasPath: _clientHasPath, ...roadBody } = body;
         const roads = JSON.parse(await env.CURVES_KV.get('roads') || '[]');
         const road = {
-          ...body,
+          ...roadBody,
           addedBy: authedEmail, // override — never trust client value
           verified: false,      // trust badge: never client-settable
           reviews: 0,           // review count comes from real reviews only
         };
         // A client-chosen id must not shadow an existing road.
         if (roads.some(r => String(r.id) === String(road.id))) road.id = Date.now();
+        const cleanPath = cleanRoadPath(rawRoadPath);
+        if (cleanPath) {
+          // Written before the roads array so a road can never claim a
+          // path that isn't there; an orphan path key from a failed second
+          // write is harmless.
+          await env.CURVES_KV.put(`roadpath:${road.id}`, JSON.stringify(cleanPath));
+          road.hasPath = true;
+        }
         roads.push(road);
         await env.CURVES_KV.put('roads', JSON.stringify(roads));
         await awardPoints(env, authedEmail, POINT_ACTIONS.add_road, 'add_road', { roadId: road.id });
@@ -884,6 +946,15 @@ export default {
     // no dedicated rating submission built (no api.rateRoad() call exists
     // in app.js), so there's no safe way yet to tell "a new rating" apart
     // from "an unrelated edit". Add the award once that feature exists.
+    // GET /roads/:id/path — Session 30. Public, like GET /roads. Returns
+    // the driven line stored for a road added from a trip, if it has one.
+    const roadPathMatch = path.match(/^\/roads\/([^/]+)\/path$/);
+    if (roadPathMatch && method === 'GET') {
+      const raw = await env.CURVES_KV.get(`roadpath:${roadPathMatch[1]}`);
+      if (!raw) return err('No path stored for this road', 404);
+      return json({ id: roadPathMatch[1], path: JSON.parse(raw) });
+    }
+
     const roadMatch = path.match(/^\/roads\/([^/]+)$/);
     if (roadMatch && method === 'PUT') {
       const authedEmail = await getAuthedEmail(request, env);
@@ -897,7 +968,7 @@ export default {
       // Only the member who added a road may edit it, and identity/trust
       // fields can never be changed through this route.
       if (roads[idx].addedBy !== authedEmail) return err('Forbidden', 403);
-      const { id: _id, addedBy: _by, verified: _v, reviews: _rv, ...safeRoadEdits } = body;
+      const { id: _id, addedBy: _by, verified: _v, reviews: _rv, path: _rp, hasPath: _hp, ...safeRoadEdits } = body;
       roads[idx] = { ...roads[idx], ...safeRoadEdits };
       await env.CURVES_KV.put('roads', JSON.stringify(roads));
       return json({ ok: true });
