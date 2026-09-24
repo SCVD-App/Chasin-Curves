@@ -4076,7 +4076,11 @@ const LiveMapView = ({ activeTrip, vehicleName, member, onMinimise, onStop }) =>
       zoom: 4,
       attributionControl: false,
     });
-    map.addControl(new window.mapboxgl.AttributionControl({ compact: true }), "top-right");
+    // Session 30: the Mapbox (i) attribution button sat on top of the vehicle
+    // name, and the logo sat on top of the footer text. Both stay visible
+    // (Mapbox requires that) but live bottom-left, lifted clear of the
+    // bottom button bar by the .cc-livemap rule in the <style> below.
+    map.addControl(new window.mapboxgl.AttributionControl({ compact: true }), "bottom-left");
     map.on("load", () => {
       map.addSource("trail", { type: "geojson", data: { type: "Feature", geometry: { type: "LineString", coordinates: [] } } });
       map.addLayer({ id: "trail-glow", type: "line", source: "trail", paint: { "line-color": C.champagne, "line-width": 10, "line-opacity": 0.18, "line-blur": 6 } });
@@ -4139,8 +4143,9 @@ const LiveMapView = ({ activeTrip, vehicleName, member, onMinimise, onStop }) =>
   );
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 260, background: C.midnight }}>
-      <style>{`@keyframes ccLivePulse { 0% { box-shadow: 0 0 0 0 rgba(192,57,43,.65); } 70% { box-shadow: 0 0 0 20px rgba(192,57,43,0); } 100% { box-shadow: 0 0 0 0 rgba(192,57,43,0); } }
+    <div className="cc-livemap" style={{ position: "fixed", inset: 0, zIndex: 260, background: C.midnight }}>
+      <style>{`.cc-livemap .mapboxgl-ctrl-bottom-left, .cc-livemap .mapboxgl-ctrl-bottom-right { bottom: calc(108px + env(safe-area-inset-bottom, 0px)); }
+@keyframes ccLivePulse { 0% { box-shadow: 0 0 0 0 rgba(192,57,43,.65); } 70% { box-shadow: 0 0 0 20px rgba(192,57,43,0); } 100% { box-shadow: 0 0 0 0 rgba(192,57,43,0); } }
 @keyframes ccRecDot { 0%,100% { opacity: 1; } 50% { opacity: .25; } }`}</style>
       <div ref={mapContainer} style={{ position: "absolute", inset: 0 }} />
 
