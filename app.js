@@ -839,6 +839,15 @@ const PointsBadge = ({ pts, style: sx }) => {
 // state filter buttons) is deliberately NOT in this pass — foundation only.
 const MAPBOX_TOKEN = "pk.eyJ1Ijoic2N2ZCIsImEiOiJjbXMzOHB1eXUwMzRjMzVvYm0ya29wYTZ1In0.FlTd5i3zPj5W7E57UaH5gw";
 
+// Session 30: map flyover timing — see the effect in MapView that uses them.
+// Flight time = FLY_MIN_MS + distance(km) × FLY_MS_PER_KM, capped at
+// FLY_MAX_MS. With these numbers a 100km hop takes ~1.8s and Sunshine Coast
+// → Switzerland (~16,000km) hits the 6.5s cap. Bump FLY_MAX_MS / FLY_MS_PER_KM
+// for a slower flight, lower them for a snappier one.
+const FLY_MIN_MS = 1800;
+const FLY_MAX_MS = 6500;
+const FLY_MS_PER_KM = 0.45;
+
 const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
   const mapContainer = useRef(null);
   const mapRef = useRef(null);
@@ -913,10 +922,21 @@ const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
     const map = mapRef.current;
     if (!map || !mapReady || !selected?.startCoords) return;
     const intl = !isAU(selected);
+    // Session 30: the flight used to be a flat 1.6s whether the road was
+    // 100km away or on the other side of the planet, so Sunshine Coast →
+    // Furka Pass flashed past. Flight time now scales with the distance to
+    // fly (see the FLY_* numbers at the top of this file to tune it), and a
+    // slightly bigger zoom-out curve makes a long hop read as a journey.
+    const flyTo = (lng, lat, zoom) => {
+      const from = map.getCenter();
+      const km = haversineKm(from.lat, from.lng, lat, lng);
+      const duration = Math.round(Math.min(FLY_MAX_MS, FLY_MIN_MS + km * FLY_MS_PER_KM));
+      map.flyTo({ center: [lng, lat], zoom, duration, curve: 1.6 });
+    };
     if (intl) {
-      map.flyTo({ center: [selected.startCoords.lng, selected.startCoords.lat], zoom: 8, duration: 1600 });
+      flyTo(selected.startCoords.lng, selected.startCoords.lat, 8);
     } else if (lastWasIntl.current) {
-      map.flyTo({ center: [148, -30], zoom: 4, duration: 1600 });
+      flyTo(148, -30, 4);
     }
     lastWasIntl.current = intl;
   }, [selected, mapReady]);
