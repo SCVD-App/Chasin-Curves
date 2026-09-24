@@ -3134,29 +3134,115 @@ const TrailViewerModal = ({ entry, vehicleName, member, onClose }) => {
 // tick two or more and a "Share Combined" bar appears. Combining is now
 // something the person doing the sharing decides, leg by leg, instead of
 // something the calendar decides for them.
-// Session 17 — RoadSegmentPicker: lets a user pick just the worthwhile
-// SECTION of a drive as a road, rather than the whole trip. Pins snap to
-// actual points in the (already privacy-clipped) trail — never freeform —
-// so a pin can never land inside a member's obscured home zone, and every
-// resulting road coordinate is provably a real driven point.
+// Session 30 — RoadSegmentPicker rebuilt for pulling a SHORT section out of
+// a long drive (Scott's real use: a 100km trip, a 5km stretch worth adding).
+// What changed from Session 17, and why:
+//  - Two sliders (start / end) for the rough pick, because grabbing a small
+//    section by dragging pins on a map zoomed out to the whole drive is
+//    fiddly on a phone. Each slider shows how far into the drive it sits.
+//  - "Zoom to section" / "Whole drive" buttons, so the pins can be fine-
+//    tuned once the map is zoomed in. Pins still drag and still snap to
+//    real trail points, exactly as before.
+//  - Pins are always kept in driving order (start before end), and a pin
+//    dropped away from the trail snaps back onto it straight away.
+//  - Drive time is now worked out from the trail's own timestamps instead
+//    of being left blank (skipped if the trail has a gap — a paused tab
+//    or a dropped GPS fix would otherwise inflate it).
+//  - Country / state / nearest-town region and (when Mapbox agrees with
+//    itself along the section) the road name are looked up and prefilled.
+//    All best-effort: any failure or a 5s timeout just leaves those fields
+//    blank for the member to type, same as before. The member still
+//    reviews everything in the Add a Road form before submitting.
+const ROAD_TIME_MAX_GAP_MS = 5 * 60 * 1000; // ~15x the 20s GPS poll interval
+const AU_STATE_CODES = ["QLD", "NSW", "VIC", "TAS", "SA", "WA", "NT", "ACT"];
+
+const trailSegmentDuration = (seg) => {
+  if (!seg || seg.length < 2) return "";
+  let ms = 0;
+  for (let i = 1; i < seg.length; i++) {
+    const dt = seg[i].t - seg[i - 1].t;
+    if (!Number.isFinite(dt) || dt < 0 || dt > ROAD_TIME_MAX_GAP_MS) return "";
+    ms += dt;
+  }
+  const mins = Math.round(ms / 60000);
+  if (mins < 1) return "";
+  if (mins < 60) return `${mins} min`;
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return m ? `${h}h ${m}min` : `${h}h`;
+};
+
+// Nearest town + state + country for one point. Same Mapbox call the
+// postcard uses (types=place, limit=1), but keeps the context too.
+const reverseGeocodeDetails = async (lat, lng) => {
+  try {
+    const res = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?types=place&limit=1&access_token=${MAPBOX_TOKEN}`);
+    const data = await res.json();
+    const f = data?.features?.[0];
+    if (!f) return null;
+    const regionCtx = f.context?.find(c => c.id.startsWith("region"));
+    const countryCtx = f.context?.find(c => c.id.startsWith("country"));
+    const countryCode = countryCtx?.short_code?.toUpperCase();
+    const country = countryCode && COUNTRIES[countryCode] ? countryCode : "";
+    const stateCode = regionCtx?.short_code?.split("-")[1]?.toUpperCase();
+    const state = country === "AU" && AU_STATE_CODES.includes(stateCode) ? stateCode : "";
+    return { place: f.text || "", state, country };
+  } catch { return null; }
+};
+
+// Asks Mapbox what road sits under five points spread along the section,
+// and only suggests a name if the same one turns up at least 3 times —
+// so a section that hops between roads gets a blank name, not a guess.
+const suggestRoadName = async (seg) => {
+  try {
+    const n = seg.length;
+    const picks = [0.1, 0.3, 0.5, 0.7, 0.9].map(f => seg[Math.min(n - 1, Math.round((n - 1) * f))]);
+    const skip = ["path", "pedestrian", "track", "service", "ferry", "golf"];
+    const perPoint = await Promise.all(picks.map(async p => {
+      const res = await fetch(`https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/tilequery/${p.lng},${p.lat}.json?layers=road&radius=30&limit=10&access_token=${MAPBOX_TOKEN}`);
+      const data = await res.json();
+      const names = new Set();
+      (data?.features || []).forEach(f => {
+        const nm = f.properties?.name;
+        if (nm && !skip.includes(f.properties?.class)) names.add(nm);
+      });
+      return names;
+    }));
+    const tally = {};
+    perPoint.forEach(set => set.forEach(nm => { tally[nm] = (tally[nm] || 0) + 1; }));
+    const best = Object.entries(tally).sort((a, b) => b[1] - a[1])[0];
+    return best && best[1] >= 3 ? best[0] : "";
+  } catch { return ""; }
+};
+
+const suggestRoadDetails = async (seg) => {
+  const mid = seg[Math.floor(seg.length / 2)];
+  const [geo, name] = await Promise.all([reverseGeocodeDetails(mid.lat, mid.lng), suggestRoadName(seg)]);
+  return { name: name || "", region: geo?.place || "", state: geo?.state || "", country: geo?.country || "" };
+};
+
+// Pins snap to actual points in the (already privacy-clipped) trail —
+// never freeform — so a pin can never land inside a member's obscured home
+// zone, and every resulting road coordinate is provably a real driven point.
 const RoadSegmentPicker = ({ trail, onConfirm, onCancel }) => {
   const mapContainer = useRef(null);
   const mapRef = useRef(null);
   const startMarkerRef = useRef(null);
   const endMarkerRef = useRef(null);
-  const [startIdx, setStartIdx] = useState(0);
-  const [endIdx, setEndIdx] = useState(trail.length - 1);
+  const lastIdx = Math.max(1, trail.length - 1);
+  const [pins, setPins] = useState({ s: 0, e: lastIdx }); // trail indices, always s < e
   const [mapReady, setMapReady] = useState(false);
+  const [lookingUp, setLookingUp] = useState(false);
 
-  const segment = trail.slice(Math.min(startIdx, endIdx), Math.max(startIdx, endIdx) + 1);
-
-  const segmentKm = useMemo(() => {
-    let km = 0;
-    for (let i = 1; i < segment.length; i++) {
-      km += haversineKm(segment[i - 1].lat, segment[i - 1].lng, segment[i].lat, segment[i].lng);
+  const cumKm = useMemo(() => {
+    const out = [0];
+    for (let i = 1; i < trail.length; i++) {
+      out.push(out[i - 1] + haversineKm(trail[i - 1].lat, trail[i - 1].lng, trail[i].lat, trail[i].lng));
     }
-    return km;
-  }, [segment]);
+    return out;
+  }, [trail]);
+
+  const segment = trail.slice(pins.s, pins.e + 1);
+  const segmentKm = (cumKm[pins.e] ?? 0) - (cumKm[pins.s] ?? 0);
 
   const nearestTrailIndex = (lngLat) => {
     let best = 0, bestDist = Infinity;
@@ -3167,10 +3253,24 @@ const RoadSegmentPicker = ({ trail, onConfirm, onCancel }) => {
     return best;
   };
 
+  // Keeps the two pins in driving order and never on the same point.
+  const normalisePins = (a, b) => {
+    let lo = Math.min(a, b), hi = Math.max(a, b);
+    if (hi === lo) { if (hi < lastIdx) hi = lo + 1; else lo = hi - 1; }
+    return { s: lo, e: hi };
+  };
+
   const segmentGeoJSON = (seg) => ({
     type: "Feature",
     geometry: { type: "LineString", coordinates: seg.map(p => [p.lng, p.lat]) },
   });
+
+  const fitTo = (pts, duration = 500) => {
+    const map = mapRef.current;
+    if (!map || !pts.length) return;
+    const lngs = pts.map(p => p.lng), lats = pts.map(p => p.lat);
+    map.fitBounds([[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]], { padding: 50, duration, maxZoom: 15 });
+  };
 
   useEffect(() => {
     if (mapRef.current || !window.mapboxgl || trail.length < 2) return;
@@ -3214,6 +3314,7 @@ const RoadSegmentPicker = ({ trail, onConfirm, onCancel }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- trail is fixed for this modal's lifetime
   }, []);
 
+  // Redraw the highlighted section and (re)position the pins whenever they move.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
@@ -3229,31 +3330,51 @@ const RoadSegmentPicker = ({ trail, onConfirm, onCancel }) => {
         ref.current.setLngLat([p.lng, p.lat]);
       }
     };
-    mkMarker(startMarkerRef, startIdx, C.champagne);
-    mkMarker(endMarkerRef, endIdx, C.blue || C.champagne);
+    mkMarker(startMarkerRef, pins.s, C.champagne);
+    mkMarker(endMarkerRef, pins.e, C.blue || C.champagne);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startIdx, endIdx, mapReady]);
+  }, [pins.s, pins.e, mapReady]);
 
+  // Dragging a pin: snap to the nearest real trail point straight away,
+  // then update the section (kept in driving order).
   useEffect(() => {
-    if (!startMarkerRef.current || !endMarkerRef.current) return;
-    const onStartDragEnd = () => setStartIdx(nearestTrailIndex(startMarkerRef.current.getLngLat()));
-    const onEndDragEnd = () => setEndIdx(nearestTrailIndex(endMarkerRef.current.getLngLat()));
-    startMarkerRef.current.on("dragend", onStartDragEnd);
-    endMarkerRef.current.on("dragend", onEndDragEnd);
-    return () => {
-      startMarkerRef.current?.off("dragend", onStartDragEnd);
-      endMarkerRef.current?.off("dragend", onEndDragEnd);
-    };
+    const sm = startMarkerRef.current, em = endMarkerRef.current;
+    if (!sm || !em) return;
+    const snap = (marker, idx) => marker.setLngLat([trail[idx].lng, trail[idx].lat]);
+    const onStartDragEnd = () => { const idx = nearestTrailIndex(sm.getLngLat()); snap(sm, idx); setPins(p => normalisePins(idx, p.e)); };
+    const onEndDragEnd = () => { const idx = nearestTrailIndex(em.getLngLat()); snap(em, idx); setPins(p => normalisePins(p.s, idx)); };
+    sm.on("dragend", onStartDragEnd);
+    em.on("dragend", onEndDragEnd);
+    return () => { sm.off("dragend", onStartDragEnd); em.off("dragend", onEndDragEnd); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady]);
 
-  const handleConfirm = () => {
-    if (segment.length < 2) return;
-    onConfirm({
-      startLat: String(segment[0].lat), startLng: String(segment[0].lng),
-      endLat: String(segment[segment.length - 1].lat), endLng: String(segment[segment.length - 1].lng),
+  const handleConfirm = async () => {
+    if (segment.length < 2 || lookingUp) return;
+    setLookingUp(true);
+    const first = segment[0], last = segment[segment.length - 1];
+    const prefill = {
+      startLat: String(first.lat), startLng: String(first.lng),
+      endLat: String(last.lat), endLng: String(last.lng),
       distance: `${segmentKm.toFixed(1)}km`,
       _prefilledFromTrip: true,
-    });
+    };
+    const duration = trailSegmentDuration(segment);
+    if (duration) prefill.duration = duration;
+    try {
+      const details = await Promise.race([
+        suggestRoadDetails(segment),
+        new Promise(resolve => setTimeout(() => resolve(null), 5000)),
+      ]);
+      if (details) {
+        if (details.name) prefill.name = details.name;
+        if (details.region) prefill.region = details.region;
+        if (details.country) prefill.country = details.country;
+        if (details.state) prefill.state = details.state;
+      }
+    } catch { /* lookup is a nicety — the form just opens without it */ }
+    setLookingUp(false);
+    onConfirm(prefill);
   };
 
   if (trail.length < 2) {
@@ -3264,17 +3385,37 @@ const RoadSegmentPicker = ({ trail, onConfirm, onCancel }) => {
 
   return (
     <div>
-      <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, padding: "0 4px" }}>
-        Drag the two pins to mark the section worth adding.
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, padding: "0 4px", lineHeight: 1.5 }}>
+        Slide the two pins along your drive for a rough pick, tap Zoom to section, then drag the pins to fine-tune.
       </div>
-      <div ref={mapContainer} style={{ height: 260, borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}` }} />
+      <div ref={mapContainer} style={{ height: "min(340px, 42vh)", borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}` }} />
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <Btn size="sm" variant="ghost" onClick={() => fitTo(segment)} style={{ flex: 1 }}>🔍 Zoom to section</Btn>
+        <Btn size="sm" variant="ghost" onClick={() => fitTo(trail)} style={{ flex: 1 }}>Whole drive</Btn>
+      </div>
+      {[["Start", "s", C.champagne], ["End", "e", C.blue || C.champagne]].map(([label, key, color]) => (
+        <div key={key} style={{ marginTop: 12, padding: "0 4px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+            <span style={{ color }}>{label} pin</span>
+            <span style={{ color: C.muted }}>{(cumKm[pins[key]] ?? 0).toFixed(1)}km into the drive</span>
+          </div>
+          <input
+            type="range" min={0} max={lastIdx} step={1} value={pins[key]}
+            onChange={e => {
+              const v = parseInt(e.target.value, 10);
+              setPins(p => key === "s" ? { s: Math.min(v, p.e - 1), e: p.e } : { s: p.s, e: Math.max(v, p.s + 1) });
+            }}
+            style={{ width: "100%", accentColor: color }}
+          />
+        </div>
+      ))}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, padding: "0 4px" }}>
         <span style={{ fontSize: 13, color: C.champagne }}>{segmentKm.toFixed(1)}km selected</span>
         <span style={{ fontSize: 11, color: C.dim }}>{segment.length} of {trail.length} pts</span>
       </div>
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-        <Btn variant="ghost" onClick={onCancel} style={{ flex: 1 }}>Not this one</Btn>
-        <Btn onClick={handleConfirm} style={{ flex: 2 }}>Add this section as a Road</Btn>
+        <Btn variant="ghost" onClick={onCancel} disabled={lookingUp} style={{ flex: 1 }}>Not this one</Btn>
+        <Btn onClick={handleConfirm} disabled={lookingUp} style={{ flex: 2 }}>{lookingUp ? "Looking up road details…" : "Add this section as a Road"}</Btn>
       </div>
     </div>
   );
