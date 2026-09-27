@@ -311,18 +311,47 @@ function checkPitPassServer(member, garage) {
 // Server-side points, replacing the fully client-side system that let any
 // user set their own points via an unvalidated PUT /member body. Real
 // values migrated from app.js's old client-side POINT_ACTIONS config.
-// rate_road and daily_login are NOT included below — rate_road has no
-// server hook yet (no rating feature built), daily_login has no endpoint
-// at all yet. Both stay client-side/unawarded until those exist.
+// daily_login has no endpoint at all yet, so it stays unawarded.
+// Session 31: rate_road is now wired — see POST /roads/:id/reviews. It and
+// write_review are the SAME submission (star ratings across the five
+// categories, plus an optional comment); which of the two points values is
+// paid depends only on whether a comment was included, not on two separate
+// forms. See the route for why points are one-time-per-member-per-road.
 const POINT_ACTIONS = {
   add_vehicle: 50,
   upload_photo: 15,
   log_trip: 5,
   add_road: 100,
   plan_trip: 20,
+  rate_road: 10,
   write_review: 30,
   report_alert: 25,
 };
+
+// Session 31: paid once, the first time ANY member reviews a road that had
+// zero reviews before theirs — on top of their own rate_road/write_review
+// points. Deliberately rewards filling gaps in map coverage over piling
+// onto a road that's already well-reviewed, which is the whole point of
+// pairing this feature with the pin-clustering work: more roads with real
+// data, not more opinions on the same handful of famous ones.
+const FIRST_REVIEW_BONUS = 20;
+
+// The five categories every road rating covers — mirrors app.js's RatingBar
+// list exactly (Ratings tab, RoadDetail). Keep the two in sync if this
+// ever changes; there's no shared source of truth between the two files.
+const RATING_CATEGORIES = ['driveability', 'accessibility', 'views', 'surface', 'thrill'];
+function validRoadRatings(r) {
+  if (!r || typeof r !== 'object') return false;
+  return RATING_CATEGORIES.every(k => Number.isInteger(r[k]) && r[k] >= 1 && r[k] <= 5);
+}
+function averageRoadRatings(reviews) {
+  const out = {};
+  for (const cat of RATING_CATEGORIES) {
+    const vals = reviews.map(rv => rv.ratings[cat]);
+    out[cat] = Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10;
+  }
+  return out;
+}
 
 // Session 18: extended for Pro membership — a client PUT can no longer set
 // its own Pro status any more than it could set its own points. pitPassActivated
@@ -1693,22 +1722,84 @@ export default {
       return new Response(html, { headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
     }
 
-    // ── Reviews & Alerts — Session 17: auth added, same reasoning as
-    // roads/trips above. Field names (reviewerId / reportedBy) are a
-    // best-guess convention — neither postReview nor postAlert has any
-    // call site in app.js yet, so there's no real form to confirm the
-    // exact shape against. Confirm/adjust once those UIs get built. ───────
-    if (path === '/reviews' && method === 'POST') {
+    // ── Road reviews — Session 31 ────────────────────────────────────────
+    // Replaces the old flat, unvalidated /reviews stub (Session 17) — that
+    // endpoint had no call site in app.js, no per-road structure, and paid
+    // no points. This is the real thing: one rating per member per road,
+    // stored under its own KV key so the roads list itself stays light,
+    // with the road's own `ratings` (averages) and `reviews` (count)
+    // recomputed and written back on every submission — that's what
+    // RoadDetail's star display and the "N reviews" line already read.
+    //
+    // Points are paid ONCE: the first time a member reviews a given road.
+    // A later edit (same member, same road) updates the content and the
+    // road's averages but pays nothing more — including if they come back
+    // and add a comment they'd left out the first time. That's a
+    // deliberate simplification over paying a delta on upgrade: it closes
+    // an obvious edit-and-resubmit farming loop and keeps the payout rule
+    // in one sentence instead of a table of before/after cases.
+    //
+    // rate_road (10) vs write_review (30) is decided purely by whether the
+    // trimmed comment is non-empty — there is no separate "quick rate" vs
+    // "full review" form, just one form where typing a comment pays more.
+    // FIRST_REVIEW_BONUS (20) additionally pays whoever is first to review
+    // a road that had none, on top of their own rate_road/write_review
+    // amount — see its definition above for why.
+    //
+    // Known small race: two members reviewing the same previously-unrated
+    // road at almost the same moment could both read "0 existing reviews"
+    // and both get the first-review bonus. Same class of read-modify-write
+    // race already accepted elsewhere in this file (e.g. plain KV road/trip
+    // arrays); not worth a Durable Object at this traffic level.
+    const roadReviewMatch = path.match(/^\/roads\/([^/]+)\/reviews$/);
+    if (roadReviewMatch && method === 'POST') {
       const authedEmail = await getAuthedEmail(request, env);
       if (!authedEmail) return err('Not authenticated', 401);
 
+      const roadId = roadReviewMatch[1];
+      const roads = JSON.parse(await env.CURVES_KV.get('roads') || '[]');
+      const roadIdx = roads.findIndex(r => String(r.id) === roadId);
+      if (roadIdx === -1) return err('Road not found', 404);
+
       const body = await request.json();
-      const review = { ...body, reviewerId: authedEmail };
-      const reviews = JSON.parse(await env.CURVES_KV.get('reviews') || '[]');
-      reviews.push(review);
-      await env.CURVES_KV.put('reviews', JSON.stringify(reviews));
-      // Points paused: no UI calls this yet, and it had no validation or per-road limit.
-      return json({ ok: true, review });
+      if (!validRoadRatings(body.ratings)) return err('Rate all five categories, 1 to 5');
+      const comment = typeof body.comment === 'string' ? body.comment.trim().slice(0, 500) : '';
+
+      const reviewsKey = `reviews:${roadId}`;
+      const reviews = JSON.parse(await env.CURVES_KV.get(reviewsKey) || '[]');
+      const existingIdx = reviews.findIndex(rv => rv.reviewerId === authedEmail);
+      const isFirstReviewOfRoad = reviews.length === 0;
+      const now = Date.now();
+
+      if (existingIdx === -1) {
+        reviews.push({ reviewerId: authedEmail, ratings: body.ratings, comment, createdAt: now, updatedAt: now });
+      } else {
+        reviews[existingIdx] = { ...reviews[existingIdx], ratings: body.ratings, comment, updatedAt: now };
+      }
+      await env.CURVES_KV.put(reviewsKey, JSON.stringify(reviews));
+
+      roads[roadIdx] = { ...roads[roadIdx], ratings: averageRoadRatings(reviews), reviews: reviews.length };
+      await env.CURVES_KV.put('roads', JSON.stringify(roads));
+
+      if (existingIdx === -1) {
+        const base = comment ? POINT_ACTIONS.write_review : POINT_ACTIONS.rate_road;
+        await awardPoints(env, authedEmail, base, comment ? 'write_review' : 'rate_road', { roadId });
+        if (isFirstReviewOfRoad) await awardPoints(env, authedEmail, FIRST_REVIEW_BONUS, 'first_review_bonus', { roadId });
+      }
+
+      return json({ ok: true, road: roads[roadIdx], reviewedBefore: existingIdx !== -1 });
+    }
+
+    // GET /roads/:id/reviews/mine — the authed member's own review for this
+    // road, so the form can load pre-filled for editing rather than
+    // starting blank every time they revisit a road they've already rated.
+    const myReviewMatch = path.match(/^\/roads\/([^/]+)\/reviews\/mine$/);
+    if (myReviewMatch && method === 'GET') {
+      const authedEmail = await getAuthedEmail(request, env);
+      if (!authedEmail) return err('Not authenticated', 401);
+      const reviews = JSON.parse(await env.CURVES_KV.get(`reviews:${myReviewMatch[1]}`) || '[]');
+      const mine = reviews.find(rv => rv.reviewerId === authedEmail) || null;
+      return json({ review: mine });
     }
 
     if (path === '/alerts' && method === 'POST') {

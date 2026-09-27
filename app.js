@@ -109,7 +109,10 @@ const api = {
   // rather than updateTrip's whole-object PUT, so concurrent RSVPs from different
   // members can never stomp each other.
   rsvpTrip: (id, status, vehicleId) => authedFetch(`${API}/trips/${id}/rsvp`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ status, vehicleId }) }),
-  postReview: (review) => authedFetch(`${API}/reviews`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(review) }),
+  // Session 31: replaces the old flat postReview() — worker.js no longer
+  // has that endpoint (see its Session 31 note), this is the real one.
+  getMyRoadReview: (roadId) => authedFetch(`${API}/roads/${roadId}/reviews/mine`),
+  submitRoadReview: (roadId, review) => authedFetch(`${API}/roads/${roadId}/reviews`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(review) }),
   postAlert: (alert) => authedFetch(`${API}/alerts`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(alert) }),
 
   // ── Pro membership — session-authenticated ──
@@ -848,6 +851,11 @@ const FLY_MIN_MS = 1800;
 const FLY_MAX_MS = 6500;
 const FLY_MS_PER_KM = 0.45;
 
+// Session 31: pin clustering — see rebuildRoadMarkers in MapView. Two roads
+// whose pins would land within this many screen pixels of each other are
+// grouped into one numbered badge instead of drawn separately.
+const CLUSTER_CELL_PX = 42;
+
 const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
   const mapContainer = useRef(null);
   const mapRef = useRef(null);
@@ -892,28 +900,75 @@ const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
     return () => { map.remove(); mapRef.current = null; };
   }, []);
 
-  // Road pin markers — rebuilt whenever roads or the selection changes
-  useEffect(() => {
+  // Session 31: pin clustering. Roads within CLUSTER_CELL_PX screen pixels
+  // of each other collapse into a single numbered badge, so a busy stretch
+  // (e.g. a run of Blue Ridge Parkway entries) reads as "6 roads here"
+  // instead of a pile of overlapping diamonds. Clustering runs in SCREEN
+  // space (map.project()), not distance-on-the-ground, which is what makes
+  // it self-adjusting: zoom in and the same roads spread out and un-cluster
+  // on their own, with no separate zoom threshold to tune. The selected
+  // road is always pulled out and drawn as its own full-size pin first —
+  // it should never vanish into a badge the moment someone taps it.
+  // A grid bucket (not nearest-neighbour) is used deliberately: it's O(n),
+  // and it avoids the classic single-linkage failure mode where a chain of
+  // just-touching pins drags a cluster across a much wider area than
+  // CLUSTER_CELL_PX would suggest.
+  const rebuildRoadMarkers = useCallback(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
 
     roadMarkersRef.current.forEach(m => m.remove());
     roadMarkersRef.current = [];
 
-    roads.forEach(r => {
-      if (!r.startCoords) return;
-      const isSelected = selected?.id === r.id;
+    const selectedRoad = roads.find(r => r.startCoords && selected?.id === r.id);
+    const rest = roads.filter(r => r.startCoords && r.id !== selectedRoad?.id);
+
+    const cells = new Map();
+    rest.forEach(r => {
+      const p = map.project([r.startCoords.lng, r.startCoords.lat]);
+      const key = `${Math.floor(p.x / CLUSTER_CELL_PX)}:${Math.floor(p.y / CLUSTER_CELL_PX)}`;
+      (cells.get(key) || cells.set(key, []).get(key)).push(r);
+    });
+
+    const addPin = (r, isSelected) => {
       const el = document.createElement("div");
       const size = isSelected ? 18 : 12;
       el.style.cssText = `width:${size}px;height:${size}px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);cursor:pointer;transition:all .15s;background:${r.alerts?.length ? C.red : isSelected ? C.champagne : `${C.champagne}aa`};border:2px solid ${isSelected ? "#fff" : C.champagne};${isSelected ? `box-shadow:0 0 12px ${C.champagne}88;` : ""}`;
       el.addEventListener("click", () => onSelect(r));
-
-      const marker = new window.mapboxgl.Marker({ element: el, anchor: "bottom" })
-        .setLngLat([r.startCoords.lng, r.startCoords.lat])
-        .addTo(map);
+      const marker = new window.mapboxgl.Marker({ element: el, anchor: "bottom" }).setLngLat([r.startCoords.lng, r.startCoords.lat]).addTo(map);
       roadMarkersRef.current.push(marker);
-    });
-  }, [roads, selected, mapReady]);
+    };
+
+    const addCluster = (group) => {
+      const lat = group.reduce((s, r) => s + r.startCoords.lat, 0) / group.length;
+      const lng = group.reduce((s, r) => s + r.startCoords.lng, 0) / group.length;
+      const size = Math.min(46, 26 + Math.min(group.length, 20) * 1.2);
+      const el = document.createElement("div");
+      el.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;background:${C.champagne};border:2px solid ${C.midnight};box-shadow:0 2px 8px #000a;font-family:'Josefin Sans',sans-serif;font-weight:700;font-size:${size >= 38 ? 15 : 13}px;color:${C.midnight};`;
+      el.textContent = String(group.length);
+      el.addEventListener("click", () => {
+        map.easeTo({ center: [lng, lat], zoom: Math.min(map.getZoom() + 2.5, 15), duration: 700 });
+      });
+      const marker = new window.mapboxgl.Marker({ element: el, anchor: "center" }).setLngLat([lng, lat]).addTo(map);
+      roadMarkersRef.current.push(marker);
+    };
+
+    cells.forEach(group => { if (group.length === 1) addPin(group[0], false); else addCluster(group); });
+    if (selectedRoad) addPin(selectedRoad, true);
+  }, [roads, selected, onSelect, mapReady]);
+
+  // Rebuild on data/selection change, and again whenever the view settles
+  // after a pan or zoom — clustering is screen-space, so panning or
+  // zooming changes which roads fall in the same bucket even though
+  // `roads` itself hasn't changed.
+  useEffect(() => { rebuildRoadMarkers(); }, [rebuildRoadMarkers]);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    map.on("zoomend", rebuildRoadMarkers);
+    map.on("moveend", rebuildRoadMarkers);
+    return () => { map.off("zoomend", rebuildRoadMarkers); map.off("moveend", rebuildRoadMarkers); };
+  }, [mapReady, rebuildRoadMarkers]);
 
   // Overseas roads: fly the map there on select, and come home to Eastern
   // Australia when an Australian road is picked afterwards. Australian
@@ -989,23 +1044,109 @@ const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
   );
 };
 
+// Session 31: an interactive five-star input, distinct from the read-only
+// StarRating used everywhere ratings are just displayed. Whole stars only —
+// matches what RATING_LABELS below actually collects (an integer 1-5 per
+// category), so there's nothing here pretending to support half-stars.
+const StarPicker = ({ value, onChange, size = 22 }) => (
+  <span style={{ display: "inline-flex", gap: 3 }}>
+    {[1, 2, 3, 4, 5].map(n => (
+      <span key={n} onClick={() => onChange(n)} style={{ cursor: "pointer", fontSize: size, lineHeight: 1, color: n <= value ? C.champagne : C.faint }}>
+        {n <= value ? "\u2605" : "\u2606"}
+      </span>
+    ))}
+  </span>
+);
+
+// Session 31: the road-review form. One form, not two — rate_road vs
+// write_review (worker.js) is decided server-side purely by whether the
+// comment is non-empty, so this doesn't need separate "quick rate" and
+// "full review" UI. Loads the member's own existing review (if any) so
+// revisiting a road they've already rated opens for editing rather than
+// starting blank; editing pays no further points (see worker.js), so the
+// button label and the confirmation message are the only difference
+// between a first submission and a later edit.
+const RATING_LABELS = [["driveability","Driveability"],["accessibility","Accessibility"],["views","Views / Scenery"],["surface","Surface Quality"],["thrill","Thrill Factor"]];
+
+const RoadReviewForm = ({ road, onRoadUpdated, onRefreshPoints }) => {
+  const [ratings, setRatings] = useState({});
+  const [comment, setComment] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [hadExisting, setHadExisting] = useState(false);
+  const [error, setError] = useState("");
+  const [savedNote, setSavedNote] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setError(""); setSavedNote("");
+    api.getMyRoadReview(road.id).then(res => {
+      if (cancelled) return;
+      if (res?.review) {
+        setRatings(res.review.ratings || {});
+        setComment(res.review.comment || "");
+        setHadExisting(true);
+      } else {
+        setRatings({}); setComment(""); setHadExisting(false);
+      }
+    }).catch(() => { /* couldn't load an existing review — form just opens blank */ })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [road.id]);
+
+  const complete = RATING_LABELS.every(([k]) => ratings[k] >= 1);
+
+  const submit = async () => {
+    if (!complete || saving) return;
+    setSaving(true); setError(""); setSavedNote("");
+    try {
+      const res = await api.submitRoadReview(road.id, { ratings, comment: comment.trim() });
+      if (res?.error) { setError(res.error); return; }
+      if (res?.road) onRoadUpdated?.(res.road);
+      setHadExisting(true);
+      setSavedNote(res?.reviewedBefore ? "Rating updated." : "Thanks \u2014 rating saved and points on the way.");
+      await onRefreshPoints?.();
+    } catch (e) {
+      setError(e?.authFailed ? "Your session's expired \u2014 sign out and back in to rate this road." : "Couldn't save your rating \u2014 check your connection and try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <div style={{ textAlign: "center", padding: 20, color: C.dim, fontSize: 12 }}>Loading\u2026</div>;
+
+  return (
+    <div style={{ background: "#0a0a0a", borderRadius: 8, padding: 14, border: `1px solid ${C.border}` }}>
+      <div style={{ fontSize: 10, color: C.champagne, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>
+        {hadExisting ? "Your rating" : "Driven this road? Rate it"}
+      </div>
+      {RATING_LABELS.map(([k, l]) => (
+        <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${C.border}` }}>
+          <span style={{ fontSize: 12, color: "#ccc" }}>{l}</span>
+          <StarPicker value={ratings[k] || 0} onChange={n => setRatings(r => ({ ...r, [k]: n }))} />
+        </div>
+      ))}
+      <Input label="Add a comment (optional \u2014 earns more points)" value={comment} onChange={setComment} placeholder="What made this road worth chasing?" multiline rows={3} style={{ marginTop: 12 }} />
+      {error && <div style={{ fontSize: 11, color: C.red, marginTop: 8 }}>{error}</div>}
+      {savedNote && !error && <div style={{ fontSize: 11, color: C.champagne, marginTop: 8 }}>{savedNote}</div>}
+      <Btn onClick={submit} disabled={!complete || saving} style={{ width: "100%", marginTop: 12 }}>
+        {saving ? "Saving\u2026" : hadExisting ? "Update rating" : "Submit rating"}
+      </Btn>
+      {!complete && <div style={{ fontSize: 10, color: C.dim, marginTop: 6, textAlign: "center" }}>Rate all five to submit.</div>}
+    </div>
+  );
+};
+
 // ─── ROAD DETAIL ─────────────────────────────────────────────
-const RoadDetail = ({ road, onClose, currentUser, onOpenProfile }) => {
+const RoadDetail = ({ road, onClose, currentUser, onOpenProfile, onRoadUpdated, onRefreshPoints }) => {
   const [tab, setTab] = useState("overview");
   const tabs = [["overview","Overview"],["ratings","Ratings"],["logistics","Logistics"],["alerts",`Alerts${road.alerts.length ? ` (${road.alerts.length})` : ""}`]];
 
-  // Session 17: "Write a Review" and "Report an Issue" never actually
-  // called api.postReview()/api.postAlert() — they just awarded points
-  // client-side and showed a fake success alert, with nothing ever
-  // persisted anywhere. That was a live, repeatable, no-cost points
-  // exploit (tap the button as many times as you like). Disabled honestly
-  // rather than left live — the server now requires a real POST /reviews
-  // or POST /alerts call to award anything at all (worker.js Session 17),
-  // and neither of those has a real submission form built yet. Build the
-  // actual review/alert forms before re-enabling these buttons for real.
-  const handleReview = () => {
-    alert("Reviews aren't live yet — coming soon.");
-  };
+  // Session 17: "Write a Review" and "Report an Issue" used to award
+  // points client-side with nothing ever persisted — a live, no-cost
+  // exploit. Reviews are real as of Session 31 (RoadReviewForm below,
+  // POST /roads/:id/reviews in worker.js). "Report an Issue" still isn't
+  // built and keeps its own placeholder further down.
 
   return (
     <div>
@@ -1078,10 +1219,7 @@ const RoadDetail = ({ road, onClose, currentUser, onOpenProfile }) => {
                 <RatingBar key={k} label={l} value={road.ratings?.[k] || 0} />
               ))}
             </div>
-            <div style={{ textAlign: "center", padding: 14, background: "#0a0a0a", borderRadius: 8, border: `1px solid ${C.border}` }}>
-              <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Driven this road? Rate it and earn 30 points.</div>
-              <Btn onClick={handleReview}>Write a Review</Btn>
-            </div>
+            <RoadReviewForm road={road} onRoadUpdated={onRoadUpdated} onRefreshPoints={onRefreshPoints} />
           </>
         )}
         {tab === "logistics" && (
@@ -6762,7 +6900,14 @@ const App = () => {
               {selected.verified && <Badge color={C.blue}>✓ Verified</Badge>}
               {selected.alerts?.length > 0 && <span style={{ color:C.red, fontSize:14 }}>⚠</span>}
             </div>
-            <RoadDetail road={selected} onClose={() => setShowRoadDetail(false)} currentUser={currentUser} onOpenProfile={setViewingMemberId} />
+            <RoadDetail
+              road={selected}
+              onClose={() => setShowRoadDetail(false)}
+              currentUser={currentUser}
+              onOpenProfile={setViewingMemberId}
+              onRoadUpdated={updated => { setRoads(prev => prev.map(r => r.id === updated.id ? updated : r)); setSelected(updated); }}
+              onRefreshPoints={refreshPoints}
+            />
           </div>
         )}
 
