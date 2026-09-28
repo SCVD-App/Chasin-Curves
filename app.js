@@ -1052,7 +1052,7 @@ const StarPicker = ({ value, onChange, size = 22 }) => (
   <span style={{ display: "inline-flex", gap: 3 }}>
     {[1, 2, 3, 4, 5].map(n => (
       <span key={n} onClick={() => onChange(n)} style={{ cursor: "pointer", fontSize: size, lineHeight: 1, color: n <= value ? C.champagne : C.faint }}>
-        {n <= value ? "\u2605" : "\u2606"}
+        {n <= value ? "★" : "☆"}
       </span>
     ))}
   </span>
@@ -1104,16 +1104,16 @@ const RoadReviewForm = ({ road, onRoadUpdated, onRefreshPoints }) => {
       if (res?.error) { setError(res.error); return; }
       if (res?.road) onRoadUpdated?.(res.road);
       setHadExisting(true);
-      setSavedNote(res?.reviewedBefore ? "Rating updated." : "Thanks \u2014 rating saved and points on the way.");
+      setSavedNote(res?.reviewedBefore ? "Rating updated." : "Thanks — rating saved and points on the way.");
       await onRefreshPoints?.();
     } catch (e) {
-      setError(e?.authFailed ? "Your session's expired \u2014 sign out and back in to rate this road." : "Couldn't save your rating \u2014 check your connection and try again.");
+      setError(e?.authFailed ? "Your session's expired — sign out and back in to rate this road." : "Couldn't save your rating — check your connection and try again.");
     } finally {
       setSaving(false);
     }
   };
 
-  if (loading) return <div style={{ textAlign: "center", padding: 20, color: C.dim, fontSize: 12 }}>Loading\u2026</div>;
+  if (loading) return <div style={{ textAlign: "center", padding: 20, color: C.dim, fontSize: 12 }}>Loading…</div>;
 
   return (
     <div style={{ background: "#0a0a0a", borderRadius: 8, padding: 14, border: `1px solid ${C.border}` }}>
@@ -1126,11 +1126,11 @@ const RoadReviewForm = ({ road, onRoadUpdated, onRefreshPoints }) => {
           <StarPicker value={ratings[k] || 0} onChange={n => setRatings(r => ({ ...r, [k]: n }))} />
         </div>
       ))}
-      <Input label="Add a comment (optional \u2014 earns more points)" value={comment} onChange={setComment} placeholder="What made this road worth chasing?" multiline rows={3} style={{ marginTop: 12 }} />
+      <Input label="Add a comment (optional — earns more points)" value={comment} onChange={setComment} placeholder="What made this road worth chasing?" multiline rows={3} style={{ marginTop: 12 }} />
       {error && <div style={{ fontSize: 11, color: C.red, marginTop: 8 }}>{error}</div>}
       {savedNote && !error && <div style={{ fontSize: 11, color: C.champagne, marginTop: 8 }}>{savedNote}</div>}
       <Btn onClick={submit} disabled={!complete || saving} style={{ width: "100%", marginTop: 12 }}>
-        {saving ? "Saving\u2026" : hadExisting ? "Update rating" : "Submit rating"}
+        {saving ? "Saving…" : hadExisting ? "Update rating" : "Submit rating"}
       </Btn>
       {!complete && <div style={{ fontSize: 10, color: C.dim, marginTop: 6, textAlign: "center" }}>Rate all five to submit.</div>}
     </div>
@@ -5841,6 +5841,92 @@ const SCOTT_TRIUMPH_PHOTO = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev
 const SCOTT_MUSTANG_PHOTO = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/scott_cc_v1781788119651_1781788455137.jpg";
 const SCOTT_LANDCRUISER_PHOTO = "https://pub-b314c19cc30f425aa97c85dbfee0e713.r2.dev/scott_cc_v1781787929689_1781790031237.jpg";
 
+// Session 31: slides 4 (Trips & Runs) and 5 (GPS Logbook) were "anemic" —
+// one run card / three plain rows in tiny type, floating in a tall empty
+// box. They're now built to look like the real screens: the app header,
+// the same card layout as TripPlanner and LogbookView (real Btn / Badge /
+// VehicleAvatar components, so they can't drift from the live look), and
+// the bottom tab bar. Still illustrative, not live data. Run dates are
+// computed from today (tourDate) so an upcoming run never turns into a
+// past-dated one the way "Kenilworth Donuts Run" did; Logbook entries are
+// history, so fixed past dates are fine there.
+const tourDate = (daysFromNow) => new Date(Date.now() + daysFromNow * 86400000)
+  .toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" });
+
+const TOUR_Z4  = { year: "2005", make: "BMW", model: "Z4", colour: "Imola Red" };
+const TOUR_JAG = { year: "2004", make: "Jaguar", model: "X350", colour: "Champagne" };
+const TOUR_TRI = { year: "2014", make: "Triumph", model: "Thunderbird Storm", colour: "Marble Grey" };
+const TOUR_LC  = { year: "2016", make: "Toyota", model: "LandCruiser 200 Series", colour: "Black" };
+const TOUR_911 = { year: "2019", make: "Porsche", model: "911", colour: "Midnight Black" };
+
+const TourAppHeader = () => (
+  <div style={{ padding: "12px 16px 10px", borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+    <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 19, fontWeight: 600, color: C.champagne, lineHeight: 1 }}>Chasin<span style={{ color: C.red }}>'</span> Curves</div>
+    <div style={{ fontSize: 8, color: "#555", letterSpacing: "0.2em", textTransform: "uppercase", marginTop: 3 }}>Roads, Rivers &amp; Riffs</div>
+  </div>
+);
+
+const TourNav = ({ active }) => (
+  <div style={{ display: "flex", borderTop: `1px solid ${C.border}`, background: "#0d0d0d", flexShrink: 0, padding: "8px 0 10px" }}>
+    {[["🛣️", "Roads"], ["🏁", "Trips"], ["🚗", "Garage"], ["📋", "Logbook"], ["👤", "Profile"]].map(([icon, label]) => (
+      <div key={label} style={{ flex: 1, textAlign: "center", opacity: label === active ? 1 : 0.55 }}>
+        <div style={{ fontSize: 17, lineHeight: 1 }}>{icon}</div>
+        <div style={{ fontSize: 8, letterSpacing: "0.12em", textTransform: "uppercase", marginTop: 3, color: label === active ? C.champagne : C.dim }}>{label}</div>
+        {label === active && <div style={{ height: 2, width: 22, background: C.champagne, margin: "4px auto 0", borderRadius: 1 }} />}
+      </div>
+    ))}
+  </div>
+);
+
+const tourBtnStyle = { cursor: "default" }; // mock buttons — look like the real ones, do nothing
+
+const TourRunCard = ({ title, when, organiser, vehicle, going, roadNames, joining, notes, host, joined }) => (
+  <div style={{ background: "#0a0a0a", border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 10 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+      <div>
+        <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 17, fontWeight: 600, color: C.bone, marginBottom: 2 }}>{title}</div>
+        <div style={{ fontSize: 11, color: C.dim }}>{when}</div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <VehicleAvatar vehicle={vehicle} size={34} />
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 11, color: C.muted }}>{organiser}</div>
+          <div style={{ fontSize: 10, color: C.dim }}>{going} going</div>
+        </div>
+      </div>
+    </div>
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+      {roadNames.map(n => (
+        <span key={n} style={{ fontSize: 11, padding: "3px 10px", background: C.champagneDim, borderRadius: 20, color: C.champagne, border: `1px solid ${C.champagne}33` }}>{n}</span>
+      ))}
+    </div>
+    <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+      {joining.map((v, i) => <div key={i} style={{ marginLeft: i > 0 ? -8 : 0 }}><VehicleAvatar vehicle={v} size={26} /></div>)}
+      <span style={{ marginLeft: 10, fontSize: 11, color: C.dim }}>{joining.length} vehicle{joining.length !== 1 ? "s" : ""} joining</span>
+    </div>
+    {notes && <div style={{ fontSize: 12, color: C.dim, marginBottom: 10, fontStyle: "italic", lineHeight: 1.45 }}>{notes}</div>}
+    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      {joined ? <Badge color={C.blue}>✓ You're in</Badge> : <Btn size="sm" variant="blue" style={tourBtnStyle}>Join this Run</Btn>}
+      <Btn size="sm" variant="ghost" style={tourBtnStyle}>🎟 Invite</Btn>
+      {host && <Btn size="sm" variant="ghost" style={tourBtnStyle}>✏️ Edit</Btn>}
+      {host && <Btn size="sm" variant="danger" style={tourBtnStyle}>Cancel run</Btn>}
+    </div>
+  </div>
+);
+
+const TourDayCap = ({ label, used, cap }) => (
+  <div style={{ padding: 12, borderRadius: 8, border: `1px solid ${C.border}`, marginBottom: 10 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+      <div style={{ fontSize: 13, color: C.bone }}>{label}</div>
+      <div style={{ fontSize: 12, color: C.champagne, fontWeight: 700 }}>{used}/{cap} days</div>
+    </div>
+    <div style={{ height: 3, background: "#1e1e1e", borderRadius: 2 }}>
+      <div style={{ height: "100%", width: `${Math.min(100, (used / cap) * 100)}%`, background: `linear-gradient(90deg, ${C.champagne}, ${C.champagneLight})`, borderRadius: 2 }} />
+    </div>
+    <div style={{ fontSize: 10, color: C.dim, marginTop: 5 }}>Rolling 365-day count, not a fixed calendar year — cross-check against your actual rego period</div>
+  </div>
+);
+
 const TOUR_SLIDES = [
   {
     // Session 27: rebuilt as a multi-vehicle list (was a single-vehicle
@@ -5894,77 +5980,109 @@ const TOUR_SLIDES = [
     // oversizes content by ~30% specifically so a photographic background
     // can be "scanned" without ever showing a hard edge — wrong for
     // something meant to be seen in full.
+    // Session 31: swapped the old 10km Jaguar postcard for the 100km Z4 run
+    // (Brisbane to Mount Mellum) — the same card used in the social posts.
+    // The file lives in the SCVD-WEB repo (images/cc-postcard-z4.jpg), same
+    // way the Roads slide loads cc-roads.jpg. photoFallback keeps the old
+    // R2-hosted card showing if the new file isn't uploaded yet (or the
+    // site cache is stale), so a deploy-order slip can't leave a blank slide.
     meta: "Trip Postcards",
     fit: true,
-    photoUrl: SCOTT_JAG_POSTCARD,
+    photoUrl: "https://scvd.app/images/cc-postcard-z4.jpg",
+    photoFallback: SCOTT_JAG_POSTCARD,
     bg: () => <div style={{ position:"absolute", inset:0, background:"#0d0d0d" }} />,
     caption: null, // the postcard already has its own title/stats/route baked in — no need to double up
   },
   {
-    // Session 29: swapped the stale, past-dated "Kenilworth Donuts Run"
-    // (18 Sept — already happened by the time anyone would see this) for
-    // Scott's real, upcoming, currently-hosted run. Also now shows Edit and
-    // Cancel Run alongside Share, since this is genuinely Scott's own run
-    // as host — a chance to put the new host controls in front of
-    // visitors, not just members who happen to host a run themselves.
+    // Session 31: rebuilt to look like the real Trips tab (see the note above
+    // TourAppHeader) — two full run cards (one you host, with Edit / Cancel;
+    // one hosted by someone else, with Join this Run) and a third peeking in
+    // from the bottom like a scrolled list. Titles are timeless and dates
+    // are relative to today, so this can't go stale. The earlier Session 29
+    // note still applies to the reasoning: hosts see Edit and Cancel run.
     meta: "Trips & Runs",
     fit: true,
     photoUrl: null,
     bg: () => (
-      <div style={{ position:"absolute", inset:0, background:"#0a0a0a", padding:"6% 6% 0" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:18 }}>
-          <div>
-            <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:18, color:C.champagne }}>Trips & Runs</div>
-            <div style={{ fontSize:10, color:C.dim }}>See who's heading out. Join the convoy.</div>
+      <div style={{ position:"absolute", inset:0, background:"#0d0d0d", display:"flex", flexDirection:"column" }}>
+        <TourAppHeader />
+        <div style={{ flex:1, minHeight:0, overflow:"hidden", padding:"16px 16px 0" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+            <div>
+              <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:20, color:C.champagne }}>Trips &amp; Runs</div>
+              <div style={{ fontSize:11, color:C.dim, marginTop:2 }}>See who's heading out. Join the convoy.</div>
+            </div>
+            <Btn size="sm" style={tourBtnStyle}>+ Plan a Run</Btn>
           </div>
-          <span style={{ fontSize:11, fontWeight:700, padding:"7px 14px", borderRadius:8, background:`linear-gradient(135deg, ${C.champagne}, ${C.champagneLight})`, color:C.midnight }}>+ PLAN A RUN</span>
+          <TourRunCard
+            title="Sunday Hinterland Loop" when={`${tourDate(9)} · 07:30`}
+            organiser="Scott" vehicle={TOUR_Z4} going={4} host joined
+            roadNames={["Kenilworth–Maleny Road", "Peachester Road"]}
+            joining={[TOUR_Z4, TOUR_JAG, TOUR_TRI, TOUR_LC]}
+            notes="Coffee to start, up the hill and around a few scenic curves, then lunch and a beer."
+          />
+          <TourRunCard
+            title="Smokies Weekend" when={`${tourDate(40)} · 08:00`}
+            organiser="Jules" vehicle={TOUR_911} going={6}
+            roadNames={["Tail of the Dragon (US 129)", "Blue Ridge Parkway"]}
+            joining={[TOUR_911, TOUR_Z4, TOUR_JAG]}
+            notes="Two days, one set of mountains, as many corners as we can fit in."
+          />
+          <TourRunCard
+            title="Lap of Tassie" when={`${tourDate(75)} · 09:00`}
+            organiser="Scott" vehicle={TOUR_Z4} going={2}
+            roadNames={["Tasmanian Highland Lakes Road"]}
+            joining={[TOUR_Z4, TOUR_TRI]}
+          />
         </div>
-        <div style={{ border:`1px solid ${C.border}`, borderRadius:10, padding:14 }}>
-          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
-            <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, fontWeight:600, color:C.bone }}>Goodbye 2026 Cruise</div>
-            <div style={{ fontSize:10, color:C.dim }}>1 going</div>
-          </div>
-          <div style={{ fontSize:10, color:C.dim, marginBottom:8 }}>27 Dec 2026 · 08:00</div>
-          <div style={{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
-            <span style={{ fontSize:9, padding:"3px 9px", borderRadius:12, background:"#1a1608", color:C.champagne }}>Kenilworth-Maleny Road</span>
-            <span style={{ fontSize:9, padding:"3px 9px", borderRadius:12, background:"#1a1608", color:C.champagne }}>Peachester Road</span>
-          </div>
-          <div style={{ fontSize:10, color:C.dim, fontStyle:"italic", marginBottom:12 }}>Coffee to start, then up the hill and around a few scenic curves before returning to Aussie World for some lunch and a beer</div>
-          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-            <span style={{ fontSize:10, padding:"5px 12px", borderRadius:6, border:`1px solid ${C.blue}`, color:C.blue }}>✓ YOU'RE IN</span>
-            <span style={{ fontSize:10, padding:"5px 12px", borderRadius:6, border:`1px solid ${C.border}`, color:C.dim }}>📤 SHARE</span>
-            <span style={{ fontSize:10, padding:"5px 12px", borderRadius:6, border:`1px solid ${C.border}`, color:C.dim }}>✏️ EDIT</span>
-            <span style={{ fontSize:10, padding:"5px 12px", borderRadius:6, border:`1px solid ${C.red}`, color:C.red }}>CANCEL RUN</span>
-          </div>
-        </div>
+        <TourNav active="Trips" />
       </div>
     ),
     caption: null,
   },
   {
-    // Session 27: real vehicles + realistic odometer entries and points,
-    // matching the actual Logbook screen's structure — was generic
-    // invented dates/distances before.
+    // Session 31: rebuilt to look like the real Logbook screen — title and
+    // the Share a Trip / Log a Trip buttons, a day-cap card per vehicle,
+    // then the entries list (one still open, showing + Return Odo). Entries
+    // are past events so fixed dates are fine; the two Z4 legs are the real
+    // 23 Sept 100km and 88km drives (odometer figures and times illustrative).
     meta: "GPS Logbook",
     fit: true,
     photoUrl: null,
     bg: () => (
-      <div style={{ position:"absolute", inset:0, background:"#0a0a0a", padding:"6%" }}>
-        <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:18, color:C.champagne, marginBottom:2 }}>Logbook</div>
-        <div style={{ fontSize:10, color:C.dim, marginBottom:18 }}>Same-day entries only — timestamp is captured automatically.</div>
-        {[
-          { v:"2004 Jaguar X350", d:"27 Aug 2026, 4:06 pm", o:"365046 → 365056", pts:"27 PTS" },
-          { v:"2004 Jaguar X350", d:"27 Aug 2026, 2:58 pm", o:"365036 → 365046", pts:"45 PTS" },
-          { v:"2005 BMW Z4", d:"25 Aug 2026, 4:22 pm", o:"135251 → 135258", pts:null },
-        ].map((e, i) => (
-          <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 0", borderTop: i > 0 ? `1px solid ${C.border}` : "none" }}>
-            <div>
-              <div style={{ fontSize:13, color:C.bone, marginBottom:2 }}>{e.v}</div>
-              <div style={{ fontSize:10, color:C.dim }}>{e.d} · Odo {e.o}</div>
+      <div style={{ position:"absolute", inset:0, background:"#0d0d0d", display:"flex", flexDirection:"column" }}>
+        <TourAppHeader />
+        <div style={{ flex:1, minHeight:0, overflow:"hidden", padding:"16px 16px 0" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, gap:8 }}>
+            <div style={{ minWidth:0 }}>
+              <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:20, color:C.champagne }}>Logbook</div>
+              <div style={{ fontSize:11, color:C.dim, marginTop:2 }}>Same-day entries only — timestamp is captured automatically.</div>
             </div>
-            {e.pts && <span style={{ fontSize:10, padding:"4px 9px", borderRadius:8, border:`1px solid ${C.champagne}`, color:C.champagne, flexShrink:0 }}>📍 {e.pts}</span>}
+            <div style={{ display:"flex", gap:6, flexShrink:0 }}>
+              <Btn size="sm" variant="ghost" style={tourBtnStyle}>📤 Share</Btn>
+              <Btn size="sm" style={tourBtnStyle}>+ Log</Btn>
+            </div>
           </div>
-        ))}
+          <TourDayCap label="2005 BMW Z4 · NSW" used={14} cap={60} />
+          <TourDayCap label="2004 Jaguar X350 · VIC" used={31} cap={90} />
+          <div style={{ fontSize:11, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", margin:"14px 0 6px" }}>Entries</div>
+          {[
+            { v:"2005 BMW Z4", d:"23 Sept 2026, 6:41 pm", o:"135616 → 135704", pts:230 },
+            { v:"2005 BMW Z4", d:"23 Sept 2026, 4:29 pm", o:"135516 → 135616", pts:317 },
+            { v:"2004 Jaguar X350", d:"27 Aug 2026, 4:06 pm", o:"365046 → 365056", pts:27 },
+            { v:"2004 Jaguar X350", d:"27 Aug 2026, 2:58 pm", o:"365036 → 365046", pts:45 },
+          ].map((e, i) => (
+            <div key={i} style={{ padding:"11px 4px", borderBottom:"1px solid #151515", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
+              <div style={{ minWidth:0 }}>
+                <div style={{ fontSize:13, color:C.bone }}>{e.v}</div>
+                <div style={{ fontSize:11, color:C.dim, marginTop:2 }}>{e.d}</div>
+                <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>Odo {e.o}</div>
+              </div>
+              <Btn size="sm" variant="ghost" style={tourBtnStyle}>📍 {e.pts} pts</Btn>
+            </div>
+          ))}
+        </div>
+        <TourNav active="Logbook" />
       </div>
     ),
     caption: null,
@@ -6007,7 +6125,7 @@ const TourSlideBox = ({ slide, index, height }) => (
   <div style={{ position:"relative", width:"100%", height, borderRadius:14, overflow:"hidden", border:`1px solid ${C.border}` }}>
     <div key={index} style={{ position:"absolute", inset: slide.fit ? 0 : "-8%", animation: slide.fit ? "none" : `${slide.pan} 4.5s linear forwards` }}>
       {slide.photoUrl
-        ? <img src={slide.photoUrl} alt="" style={{ position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover" }} />
+        ? <img src={slide.photoUrl} alt="" onError={e => { if (slide.photoFallback && e.currentTarget.getAttribute("src") !== slide.photoFallback) e.currentTarget.src = slide.photoFallback; }} style={{ position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover" }} />
         : slide.bg()}
     </div>
     {slide.photoUrl && slide.caption && <div style={{ position:"absolute", inset:0, background:"linear-gradient(to top, rgba(0,0,0,0.55), rgba(0,0,0,0.05) 50%)" }} />}
