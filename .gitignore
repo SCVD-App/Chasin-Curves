@@ -1,5 +1,10 @@
-# Wrangler
+# Wrangler — config and local state stay on this PC, never on GitHub
+wrangler.toml
 .wrangler/
+
+# Worker code + handoff live in the PRIVATE scvd-context repo — never publish them here
+worker.js
+handoff.md
 
 # Node
 node_modules/

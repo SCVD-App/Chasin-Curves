@@ -796,6 +796,169 @@ const Modal = ({ title, subtitle, onClose, children, wide }) => (
   </div>
 );
 
+// ─── IN-APP DIALOGS (replace the browser's alert / confirm / prompt) ──
+// The native pop-ups showed "scvd-app.github.io says" in their header and
+// can't be styled. These are the in-app versions, all sharing one look.
+// Each one mounts on its own root (same trick the map uses), so they can be
+// called from anywhere — including inside async handlers — and they sit
+// above the live map (zIndex 260):
+//   appAlert(message, { title })                    → resolves when dismissed (fire-and-forget is fine)
+//   await appConfirm(message, { title, confirmLabel, cancelLabel, danger }) → true / false
+//   askOdometer({ title, subtitle, minReading, cancelLabel }) → Number, or null if skipped
+//   appCopyText(text, { title })                    → shows text to copy when the clipboard is blocked
+const DialogShell = ({ title, children }) => (
+  <div style={{ position: "fixed", inset: 0, background: "#000c", zIndex: 400, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+    <div role="dialog" aria-modal="true" style={{ background: C.midnight, border: `1px solid ${C.border}`, borderRadius: 12, width: "100%", maxWidth: 420, maxHeight: "88vh", overflowY: "auto", padding: 28 }}>
+      <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 22, color: C.champagne, fontWeight: 600, marginBottom: 12 }}>{title}</div>
+      {children}
+    </div>
+  </div>
+);
+
+const dialogMessageStyle = { fontSize: 13, color: C.bone, lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word", marginBottom: 22 };
+
+// Focus one of the dialog's buttons on open so Enter works straight away.
+const useFocusButton = (ref, pick) => {
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const btns = ref.current ? ref.current.querySelectorAll("button") : [];
+      const btn = btns.length ? btns[pick(btns.length)] : null;
+      if (btn) btn.focus();
+    }, 60);
+    return () => clearTimeout(t);
+  }, []);
+};
+
+const AlertDialog = ({ title, message, onDone }) => {
+  const rowRef = useRef(null);
+  useFocusButton(rowRef, n => n - 1);
+  return (
+    <DialogShell title={title}>
+      <div style={dialogMessageStyle}>{message}</div>
+      <div ref={rowRef} onKeyDown={e => { if (e.key === "Escape") onDone(); }} style={{ display: "flex", justifyContent: "flex-end" }}>
+        <Btn onClick={() => onDone()}>OK</Btn>
+      </div>
+    </DialogShell>
+  );
+};
+
+const ConfirmDialog = ({ title, message, confirmLabel, cancelLabel, danger, onDone }) => {
+  const rowRef = useRef(null);
+  // Destructive confirms focus Cancel first so a stray Enter can't delete anything.
+  useFocusButton(rowRef, n => (danger ? 0 : n - 1));
+  return (
+    <DialogShell title={title}>
+      <div style={dialogMessageStyle}>{message}</div>
+      <div ref={rowRef} onKeyDown={e => { if (e.key === "Escape") onDone(false); }} style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <Btn variant="ghost" onClick={() => onDone(false)}>{cancelLabel || "Cancel"}</Btn>
+        <Btn variant={danger ? "danger" : "primary"} onClick={() => onDone(true)}>{confirmLabel || "OK"}</Btn>
+      </div>
+    </DialogShell>
+  );
+};
+
+const CopyTextDialog = ({ title, text, onDone }) => {
+  const [copied, setCopied] = useState(false);
+  const inputRef = useRef(null);
+  useEffect(() => {
+    const t = setTimeout(() => { if (inputRef.current) { inputRef.current.focus(); inputRef.current.select(); } }, 60);
+    return () => clearTimeout(t);
+  }, []);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(text); setCopied(true); }
+    catch { if (inputRef.current) { inputRef.current.focus(); inputRef.current.select(); } }
+  };
+  return (
+    <DialogShell title={title}>
+      <div style={{ ...dialogMessageStyle, marginBottom: 12 }}>Your browser wouldn't copy it automatically — press and hold the link below to copy it.</div>
+      <input
+        ref={inputRef}
+        readOnly
+        value={text}
+        onFocus={e => e.target.select()}
+        onKeyDown={e => { if (e.key === "Escape") onDone(); }}
+        style={{ width: "100%", background: "#0f0f0f", border: `1px solid ${C.border}`, borderRadius: 6, padding: "10px 12px", color: C.bone, fontSize: 13, fontFamily: "'Josefin Sans', sans-serif", outline: "none", marginBottom: 20 }}
+      />
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <Btn variant="ghost" onClick={copy}>{copied ? "Copied ✓" : "Copy"}</Btn>
+        <Btn onClick={() => onDone()}>Done</Btn>
+      </div>
+    </DialogShell>
+  );
+};
+
+const OdometerPromptDialog = ({ title, subtitle, minReading, cancelLabel, onDone }) => {
+  const [value, setValue] = useState("");
+  const [error, setError] = useState("");
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => { if (inputRef.current) inputRef.current.focus(); }, 60);
+    return () => clearTimeout(t);
+  }, []);
+
+  const submit = () => {
+    const n = Number(value);
+    if (value.trim() === "" || Number.isNaN(n)) {
+      setError("Enter your odometer reading as a number.");
+      return;
+    }
+    if (minReading != null && n < minReading) {
+      setError(`That's lower than the start reading (${minReading}km) — check the number and try again.`);
+      return;
+    }
+    onDone(n);
+  };
+
+  return (
+    <DialogShell title={title}>
+      {subtitle && <div style={{ fontSize: 12, color: C.dim, marginBottom: 20, lineHeight: 1.5 }}>{subtitle}</div>}
+      <div style={{ marginBottom: error ? 8 : 20 }}>
+        <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>Odometer</div>
+        <input
+          ref={inputRef}
+          type="number"
+          inputMode="numeric"
+          value={value}
+          onChange={e => { setValue(e.target.value); if (error) setError(""); }}
+          onKeyDown={e => { if (e.key === "Enter") submit(); else if (e.key === "Escape") onDone(null); }}
+          placeholder={minReading != null ? `e.g. ${minReading + 10}` : "e.g. 84210"}
+          style={{ width: "100%", background: "#0f0f0f", border: `1px solid ${error ? C.red : C.border}`, borderRadius: 6, padding: "10px 12px", color: C.bone, fontSize: 16, fontFamily: "'Josefin Sans', sans-serif", outline: "none" }}
+        />
+      </div>
+      {error && <div style={{ fontSize: 12, color: C.red, marginBottom: 16, lineHeight: 1.5 }}>{error}</div>}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <Btn variant="ghost" onClick={() => onDone(null)}>{cancelLabel || "Cancel"}</Btn>
+        <Btn onClick={submit}>Save</Btn>
+      </div>
+    </DialogShell>
+  );
+};
+
+// Mounts a dialog on its own root and resolves with whatever it reports.
+const mountDialog = render => new Promise(resolve => {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = ReactDOM.createRoot(host);
+  const finish = result => {
+    resolve(result);
+    setTimeout(() => { root.unmount(); host.remove(); }, 0);
+  };
+  root.render(render(finish));
+});
+
+const appAlert = (message, opts = {}) => {
+  const text = message == null ? "" : String(message);
+  const title = opts.title || (/couldn['’]t|failed|can['’]t|unable|error/i.test(text) ? "Something went wrong" : "Heads up");
+  return mountDialog(done => <AlertDialog title={title} message={text} onDone={() => done()} />);
+};
+const appConfirm = (message, opts = {}) =>
+  mountDialog(done => <ConfirmDialog title={opts.title || "Are you sure?"} message={String(message)} confirmLabel={opts.confirmLabel} cancelLabel={opts.cancelLabel} danger={opts.danger} onDone={done} />);
+const appCopyText = (text, opts = {}) =>
+  mountDialog(done => <CopyTextDialog title={opts.title || "Copy this"} text={text} onDone={() => done()} />);
+const askOdometer = (opts = {}) =>
+  mountDialog(done => <OdometerPromptDialog title={opts.title} subtitle={opts.subtitle} minReading={opts.minReading} cancelLabel={opts.cancelLabel} onDone={done} />);
+
 const VehicleAvatar = ({ vehicle, size = 44, selected, onClick }) => {
   const initials = `${vehicle.make[0]}${vehicle.model[0]}`;
   const colours = { "Imola Red": C.red, "Champagne": C.champagne, "Midnight Black": "#444", default: C.blue };
@@ -1254,7 +1417,7 @@ const RoadDetail = ({ road, onClose, currentUser, onOpenProfile, onRoadUpdated, 
                 })
             }
             <div style={{ marginTop: 14, textAlign: "center" }}>
-              <Btn variant="danger" size="sm" onClick={() => alert("Alert reporting isn't live yet — coming soon.")}>Report an Issue</Btn>
+              <Btn variant="danger" size="sm" onClick={() => appAlert("Alert reporting isn't live yet — coming soon.")}>Report an Issue</Btn>
             </div>
           </>
         )}
@@ -1457,7 +1620,7 @@ const GarageView = ({ member, onUpdate, onRefresh, onRefreshPoints, onSelectVehi
       if (onRefresh) await onRefresh();
     } catch (err) {
       if (err?.authFailed) throw err; // let the caller's sign-out handling catch this
-      alert(`Photo upload failed: ${err.message}`);
+      appAlert(`Photo upload failed: ${err.message}`);
     }
   };
 
@@ -1615,7 +1778,7 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onRefreshPoints, onBack, onR
     } catch (e) {
       if (e?.name !== "AbortError") {
         console.error("[Chasin' Curves] share vehicle card build failed", e);
-        alert(`Couldn't build the share card — ${e?.message || "something went wrong"}. Try again, and if it keeps happening let Scott know what the error above says.`);
+        appAlert(`Couldn't build the share card — ${e?.message || "something went wrong"}. Try again, and if it keeps happening let Scott know what the error above says.`);
       }
     } finally {
       setSharingCard(false);
@@ -1675,13 +1838,13 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onRefreshPoints, onBack, onR
         const a = document.createElement("a");
         a.href = xmasPreview.url; a.download = "chasin-curves-greetings.png";
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        try { await navigator.clipboard.writeText(text); alert("Card downloaded, and the message with your invite link is copied. Paste it wherever you post the card."); }
-        catch { alert("Card downloaded. Add this invite link when you post it:\n" + inviteUrl); }
+        try { await navigator.clipboard.writeText(text); appAlert("Card downloaded, and the message with your invite link is copied. Paste it wherever you post the card."); }
+        catch { appAlert("Card downloaded. Add this invite link when you post it:\n" + inviteUrl); }
       }
     } catch (e) {
       if (e?.name !== "AbortError") {
         console.error("[Chasin' Curves] greetings card share failed", e);
-        alert("Couldn't share the card. Try again, or download it from the preview by pressing and holding the image.");
+        appAlert("Couldn't share the card. Try again, or download it from the preview by pressing and holding the image.");
       }
     } finally {
       setXmasSharing(false);
@@ -1706,7 +1869,7 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onRefreshPoints, onBack, onR
     if (!files.length) return;
     const existing = vehicle.photos || [];
     const slots = 10 - existing.length;
-    if (slots <= 0) { alert("Maximum 10 photos reached."); return; }
+    if (slots <= 0) { appAlert("Maximum 10 photos reached."); return; }
     const toUpload = files.slice(0, slots);
     setSaving(true);
     try {
@@ -1727,7 +1890,7 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onRefreshPoints, onBack, onR
       await onRefresh();
     } catch (err) {
       if (err?.authFailed) throw err;
-      alert(`Photo upload failed: ${err.message}`);
+      appAlert(`Photo upload failed: ${err.message}`);
     } finally {
       setSaving(false);
     }
@@ -1742,14 +1905,14 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onRefreshPoints, onBack, onR
   };
 
   const deletePhoto = async (photoId) => {
-    if (!confirm("Delete this photo?")) return;
+    if (!(await appConfirm("Delete this photo?", { title: "Delete photo", confirmLabel: "Delete", danger: true }))) return;
     setSaving(true);
     try {
       const res = await fetch(`${API}/garage/${member.id}/photo/${photoId}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`Delete failed (${res.status})`);
       await onRefresh();
     } catch (err) {
-      alert(`Delete failed: ${err.message}`);
+      appAlert(`Delete failed: ${err.message}`);
     } finally {
       setSaving(false);
     }
@@ -1955,14 +2118,14 @@ const LogTripModal = ({ member, logbook, onClose, onSubmit }) => {
   const selectStyle = { width:"100%", background:"#0f0f0f", border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 12px", color:C.bone, fontSize:13, fontFamily:"'Josefin Sans', sans-serif", outline:"none" };
 
   const handleSubmit = async () => {
-    if (!vehicle) { alert("Select a vehicle first."); return; }
+    if (!vehicle) { appAlert("Select a vehicle first."); return; }
     const reading = Number(odometer);
-    if (odometer === "" || Number.isNaN(reading) || reading < 0) { alert("Enter a valid odometer reading."); return; }
+    if (odometer === "" || Number.isNaN(reading) || reading < 0) { appAlert("Enter a valid odometer reading."); return; }
     // Catches typos before they end up in a report that might be shown to
     // police — flags, doesn't block, since a genuinely lower reading
     // (odometer replaced, etc.) is rare but real.
     if (lastReading != null && reading < lastReading) {
-      const proceed = confirm(`This reading (${reading}) is lower than the last logged odometer for this vehicle (${lastReading}). Log it anyway?`);
+      const proceed = await appConfirm(`This reading (${reading}) is lower than the last logged odometer for this vehicle (${lastReading}). Log it anyway?`, { title: "Check the odometer", confirmLabel: "Log it anyway", cancelLabel: "Go back" });
       if (!proceed) return;
     }
     setSaving(true);
@@ -3917,7 +4080,7 @@ const ShareDayModal = ({ logbook, garage, member, onClose, onProposeRoad }) => {
         // and surface the real reason to whoever's looking rather than a
         // guess ("check your connection") that's often not the cause.
         console.error("[Chasin' Curves] share card build failed", e);
-        alert(`Couldn't build the share card — ${e?.message || "something went wrong"}. Try again, and if it keeps happening let Scott know what the error above says.`);
+        appAlert(`Couldn't build the share card — ${e?.message || "something went wrong"}. Try again, and if it keeps happening let Scott know what the error above says.`);
         return false;
       }
       return true;
@@ -4096,10 +4259,10 @@ const LiveTripView = ({ activeTrip, entry, vehicle, member, onClose }) => {
         await navigator.share({ title: "Chasin' Curves — Live Trip Log", text });
       } else if (navigator.clipboard) {
         await navigator.clipboard.writeText(text);
-        alert("Trip details copied — paste them wherever needed.");
+        appAlert("Trip details copied — paste them wherever needed.");
       }
     } catch (e) {
-      if (e?.name !== "AbortError") alert("Couldn't share — try again.");
+      if (e?.name !== "AbortError") appAlert("Couldn't share — try again.");
     } finally {
       setSharing(false);
     }
@@ -4468,13 +4631,12 @@ const LogbookView = ({ member, logbook, onLogEntry, onAddReturnOdometer, onRefre
   };
 
   const handleReturnOdo = async (entry) => {
-    const val = prompt("Return odometer reading?");
-    if (val === null) return;
-    const n = Number(val);
-    if (val.trim() === "" || Number.isNaN(n) || n < entry.odometerStart) {
-      alert("Enter a number no lower than the start reading.");
-      return;
-    }
+    const n = await askOdometer({
+      title: "Return Odometer",
+      subtitle: `Start reading was ${entry.odometerStart}km.`,
+      minReading: entry.odometerStart,
+    });
+    if (n === null) return;
     // Session 16e: same one-off GPS fix as trip start, taken now at
     // hand-back — gives the Trip Postcard a real finish pin without
     // needing the full GPS Trail feature to have been running.
@@ -4623,10 +4785,10 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
                       vehicleId: form.vehicleId, notes: form.notes, waypoints: form.waypoints };
     try {
       const res = await api.updateTrip(editId, updates);
-      if (res.error) { alert(res.error); return; }
+      if (res.error) { appAlert(res.error); return; }
       setTrips(prev => prev.map(t => t.id === editId ? (res.trip || { ...t, ...updates }) : t));
       setEditId(null); setForm(emptyForm); setShowNew(false);
-    } catch { alert("Couldn't save your changes. Check your connection and try again."); }
+    } catch { appAlert("Couldn't save your changes. Check your connection and try again."); }
   };
 
   const confirmCancel = async () => {
@@ -4635,21 +4797,21 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
     setBusyTripId(trip.id);
     try {
       const res = await api.cancelTrip(trip.id, cancelReason);
-      if (res.error) alert(res.error);
+      if (res.error) appAlert(res.error);
       else setTrips(prev => prev.map(t => t.id === trip.id ? (res.trip || { ...t, status: "cancelled", cancelReason }) : t));
-    } catch { alert("Couldn't cancel the run. Check your connection and try again."); }
+    } catch { appAlert("Couldn't cancel the run. Check your connection and try again."); }
     setBusyTripId(null);
     setCancelTarget(null);
   };
 
   const deleteRun = async (trip) => {
-    if (!window.confirm(`Delete "${trip.title}" for good? Anyone opening its invite link will find it gone. This can't be undone.`)) return;
+    if (!(await appConfirm(`Delete "${trip.title}" for good? Anyone opening its invite link will find it gone. This can't be undone.`, { title: "Delete this run?", confirmLabel: "Delete", danger: true }))) return;
     setBusyTripId(trip.id);
     try {
       const res = await api.deleteTrip(trip.id);
-      if (res.error) alert(res.error);
+      if (res.error) appAlert(res.error);
       else setTrips(prev => prev.filter(t => t.id !== trip.id));
-    } catch { alert("Couldn't delete the run. Check your connection and try again."); }
+    } catch { appAlert("Couldn't delete the run. Check your connection and try again."); }
     setBusyTripId(null);
   };
 
@@ -4706,7 +4868,7 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
     setGeocoding(true);
     const result = await geocodeAddress(query);
     setGeocoding(false);
-    if (!result) { alert(`Couldn't find "${query}" — try a more specific place name.`); return; }
+    if (!result) { appAlert(`Couldn't find "${query}" — try a more specific place name.`); return; }
     // Session 21: shortName ("Landsborough") over placeName ("Landsborough,
     // Queensland, Australia") — every stop on one run shares the same
     // state/country anyway, and the full form was colliding with nearby
@@ -4824,9 +4986,9 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
     if (!invite) return;
     try {
       await navigator.clipboard.writeText(invite.shareUrl);
-      alert("Invite link copied — paste it wherever you like.");
+      appAlert("Invite link copied — paste it wherever you like.");
     } catch {
-      window.prompt("Copy this invite link:", invite.shareUrl);
+      appCopyText(invite.shareUrl, { title: "Copy invite link" });
     }
   };
 
@@ -6602,7 +6764,7 @@ const App = () => {
       if (res?.pitPassActivated) {
         setCurrentUser(prev => prev ? { ...prev, pitPassActivated: res.pitPassActivated } : prev);
       } else if (res?.error) {
-        alert(res.error);
+        appAlert(res.error);
       }
     } catch (e) {
       if (e?.authFailed) handleSignOut();
@@ -6745,16 +6907,16 @@ const App = () => {
     const entry = logbook.find(e => e.id === activeTrip.entryId);
     let odometerEnd = null, endCoord = null;
     if (!activeTrip.stopped && entry && entry.odometerEnd == null) {
-      const val = prompt("Trip complete! What's the odometer reading now?");
-      if (val !== null) {
-        const n = Number(val);
-        if (val.trim() === "" || Number.isNaN(n) || n < entry.odometerStart) {
-          alert("Enter a number no lower than the start reading — you can add it later from the Logbook instead.");
-        } else {
-          odometerEnd = n;
-          const point = await pollGpsPoint("trip finish pin");
-          endCoord = point ? { lat: point.lat, lng: point.lng } : null;
-        }
+      const n = await askOdometer({
+        title: "Trip complete!",
+        subtitle: `What's the odometer reading now? Start reading was ${entry.odometerStart}km — or skip and add it later from the Logbook.`,
+        minReading: entry.odometerStart,
+        cancelLabel: "Skip for now",
+      });
+      if (n !== null) {
+        odometerEnd = n;
+        const point = await pollGpsPoint("trip finish pin");
+        endCoord = point ? { lat: point.lat, lng: point.lng } : null;
       }
     }
 
@@ -6809,11 +6971,11 @@ const App = () => {
         if (trackGps) startTrailRecording(res.entry, vehicleId);
         return true;
       }
-      alert("Couldn't log the trip — try again.");
+      appAlert("Couldn't log the trip — try again.");
       return false;
     } catch (e) {
       if (e?.authFailed) handleSignOut();
-      else alert(`Couldn't log the trip: ${e.message}`);
+      else appAlert(`Couldn't log the trip: ${e.message}`);
       return false;
     }
   }, [currentUser, handleSignOut, startTrailRecording]);
@@ -6825,7 +6987,7 @@ const App = () => {
       setLogbook(prev => prev.map(e => e.id === entryId ? { ...e, odometerEnd, ...(endCoord ? { endCoord } : {}) } : e));
     } catch (e) {
       if (e?.authFailed) handleSignOut();
-      else alert(`Couldn't save the return odometer: ${e.message}`);
+      else appAlert(`Couldn't save the return odometer: ${e.message}`);
     }
   }, [currentUser, handleSignOut]);
 
@@ -7105,7 +7267,7 @@ const App = () => {
             try {
               const res = await api.postRoad(r);
               if (res?.error) {
-                alert(res.error);
+                appAlert(res.error);
                 return; // draft autosave already covers the form — nothing lost
               }
               const saved = res.road || r;
@@ -7115,7 +7277,7 @@ const App = () => {
               await refreshPoints();
             } catch (e) {
               if (e?.authFailed) { handleSignOut(); return; }
-              alert(`Couldn't add the road: ${e.message}`);
+              appAlert(`Couldn't add the road: ${e.message}`);
             }
           }}
         />
