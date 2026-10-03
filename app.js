@@ -1582,7 +1582,7 @@ const GarageView = ({ member, onUpdate, onRefresh, onRefreshPoints, onSelectVehi
     // The old onPointsEarned("add_vehicle") call that used to sit here
     // was a straight double-award — removed, replaced with a real
     // points refresh from the server instead of a client-side guess.
-    await onUpdate({ ...member, garage: [...member.garage, v] });
+    await onUpdate({ ...member, garage: [...member.garage, v] }, { garage: true });
     await onRefreshPoints?.();
     setForm({ make: "", model: "", year: "", variant: "", colour: "", notes: "", regoState: "", vicDayCap: 90, regoAnniversary: "" });
     setShowAdd(false);
@@ -1591,7 +1591,7 @@ const GarageView = ({ member, onUpdate, onRefresh, onRefreshPoints, onSelectVehi
   };
 
   const setPrimary = id => {
-    onUpdate({ ...member, garage: member.garage.map(v => ({ ...v, primary: v.id === id })) });
+    onUpdate({ ...member, garage: member.garage.map(v => ({ ...v, primary: v.id === id })) }, { garage: true });
   };
 
   const handleAvatarUpload = async (vehicleId, e) => {
@@ -1860,7 +1860,7 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onRefreshPoints, onBack, onR
 
   const updateVehicle = async (updated) => {
     const newGarage = member.garage.map(v => v.id === updated.id ? updated : v);
-    await onUpdate({ ...member, garage: newGarage });
+    await onUpdate({ ...member, garage: newGarage }, { garage: true });
     if (onRefresh) await onRefresh();
   };
 
@@ -6606,7 +6606,11 @@ const App = () => {
   // ── Load user from KV by email — assumes a session already exists ──
   const loadUser = async (email) => {
     const profile = await api.getMember(email);
-    const garage  = await api.getGarage(email);
+    // 3 Oct 2026 (garage safety): one retry if the garage doesn't come back as a list (a brief
+    // Worker/KV hiccup returns an error object, not a 401) — a sign-in that
+    // silently shows an empty garage is how stale data used to get saved.
+    let garage = await api.getGarage(email);
+    if (!Array.isArray(garage)) garage = await api.getGarage(email);
     const resolvedGarage = Array.isArray(garage) ? garage : [];
     setCurrentUser({ ...profile, garage: resolvedGarage });
     try {
@@ -6740,14 +6744,28 @@ const App = () => {
     catch (e) { if (e?.authFailed) handleSignOut(); }
   }, [currentUser, handleSignOut]);
 
-  // ── Update user — saves member profile AND garage separately ─
-  const updateCurrentUser = useCallback(async (updated) => {
+  // ── Update user — saves member profile; garage only when asked ─
+  // 3 Oct 2026 (garage safety): the garage is saved ONLY when the caller actually changed it
+  // ({ garage: true } — add / set primary / edit vehicle). Profile edits used
+  // to re-save the whole garage too, so a device holding a stale or failed-
+  // to-load garage could overwrite real vehicles with [] just by editing a
+  // bio. The worker now also refuses any save that would drop a vehicle.
+  const updateCurrentUser = useCallback(async (updated, opts = {}) => {
     setCurrentUser(updated);
     try {
       // Strip garage from member record — garage has its own KV key
       const { garage, ...memberData } = updated;
       await api.updateMember(updated.id, memberData);
-      await api.saveGarage(updated.id, garage || []);
+      if (opts.garage) {
+        const res = await api.saveGarage(updated.id, garage || []);
+        if (res?.error) {
+          // Rejected (e.g. out of date on this device) — show the server's
+          // real garage again rather than leaving an unsaved local version.
+          alert(res.error);
+          const fresh = await api.getGarage(updated.id);
+          if (Array.isArray(fresh)) setCurrentUser(prev => ({ ...prev, garage: fresh }));
+        }
+      }
     } catch (e) { if (e?.authFailed) handleSignOut(); }
   }, [handleSignOut]);
 
