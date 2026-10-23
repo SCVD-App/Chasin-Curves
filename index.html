@@ -19,6 +19,22 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
+  <!-- v3.1: apply a saved light-mode preference before first paint, so
+       there's no flash of dark-then-light. app.js (loaded after this)
+       does the equivalent at runtime once the toggle is actually used —
+       this script only covers the very first render, before app.js has
+       even been fetched/transpiled. Keep the two hex values below in
+       sync with LIGHT_PALETTE.midnight / .bone in app.js if that ever
+       changes. -->
+  <script>
+    (function () {
+      try {
+        if (localStorage.getItem('cc_theme') === 'light') {
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      } catch (e) {}
+    })();
+  </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -27,12 +43,22 @@
       height: 100%;
       height: -webkit-fill-available;
     }
+
+    :root {
+      --cc-bg: #0d0d0d;
+      --cc-ink: #f5f3ee;
+    }
+    :root[data-theme="light"] {
+      --cc-bg: #f5f3ee;
+      --cc-ink: #1a1a1a;
+    }
+
     body {
       min-height: 100%;
       min-height: -webkit-fill-available;
       min-height: 100dvh;
-      background: #0d0d0d;
-      color: #f5f3ee;
+      background: var(--cc-bg);
+      color: var(--cc-ink);
       font-family: 'Josefin Sans', sans-serif;
       overflow: hidden;
       position: fixed;

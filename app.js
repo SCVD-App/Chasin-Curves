@@ -10,14 +10,42 @@
 //       Server now checks the token's email against :id on every
 //       member/garage request — closes the "type anyone's username"
 //       account-isolation gap found in beta.
+// v3.1: Light/dark theme toggle, per-device (localStorage, not synced
+//       to the member record). Added for Benn Warren, who found the
+//       dark-only palette hard to read.
+//       Palette split into DARK_PALETTE / LIGHT_PALETTE; `C` is the
+//       same mutable object every component already reads via
+//       C.xxx — toggling calls applyThemeColors(name), which mutates
+//       C's properties in place (Object.assign) and syncs the native
+//       chrome (body background, <meta name="theme-color">) before
+//       the next React render, so there's one clean re-render with
+//       no flash of the wrong theme. index.html's inline bootstrap
+//       script does the equivalent for the very first paint, before
+//       this file has even loaded.
+//       Scope: page chrome (backgrounds, cards, text, borders) is
+//       fully theme-aware. Deliberately NOT touched: colours used to
+//       draw trip postcards / share cards / badges on <canvas> (they
+//       render to a shared image and must look the same for every
+//       viewer, like Instagram does), the Mapbox map style itself
+//       (still dark-v11 in both themes — a separate, bigger piece of
+//       work), and white text/icons overlaid on user photos or the
+//       map (those need to stay legible against photographic content
+//       that doesn't theme-switch, not against the app's own chrome).
 // ============================================================
 
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 // ─── PALETTE ────────────────────────────────────────────────
-const C = {
-  midnight: '#0d0d0d',
-  panel: '#111',
+// Two complete palettes, same keys. DARK is byte-for-byte the
+// original palette — nothing changes for anyone who doesn't touch
+// the toggle. `C` itself stays a single mutable object (every
+// existing C.xxx reference throughout this file keeps working
+// unchanged) — applyThemeColors() just overwrites its properties.
+const DARK_PALETTE = {
+  midnight: '#0d0d0d',      // page background
+  panel: '#111',            // card / raised surface
+  panel2: '#0a0a0a',        // deep / sunken surface (nested rows, placeholders)
+  input: '#0f0f0f',         // form field background
   border: '#1e1e1e',
   border2: '#2a2a2a',
   champagne: '#C9A84C',
@@ -27,11 +55,68 @@ const C = {
   redDim: '#C0392B22',
   blue: '#2E6DA4',
   blueDim: '#2E6DA422',
-  bone: '#f5f3ee',
-  muted: '#888',
-  dim: '#555',
-  faint: '#333',
+  bone: '#f5f3ee',          // primary text
+  boneMuted: '#ccc',        // secondary text / body copy
+  muted: '#888',            // tertiary text
+  dim: '#555',              // recessed text
+  faint: '#333',            // barely-visible text (near-invisible on dark bg)
+  subtle: '#444',           // small-caps labels/taglines
+  labelDim: '#666',         // ambient corner labels (e.g. map area)
 };
+
+const LIGHT_PALETTE = {
+  midnight: '#f5f3ee',      // cream page background
+  panel: '#ffffff',
+  panel2: '#efe9db',
+  input: '#f5f0e2',
+  border: '#e3ddd0',
+  border2: '#d6cdb8',
+  champagne: '#C9A84C',     // brand gold stays constant across themes
+  champagneLight: '#B8912F',// needs to be darker than dark-mode's highlight to hold contrast on a pale bg
+  champagneDim: '#C9A84C22',
+  red: '#C0392B',           // status red stays constant — still reads as "red" either way
+  redDim: '#C0392B22',
+  blue: '#2E6DA4',          // status blue stays constant (matches the scvd.app site's own link colour)
+  blueDim: '#2E6DA422',
+  bone: '#1a1a1a',          // primary text — dark ink
+  boneMuted: '#4a443a',
+  muted: '#6b6558',
+  dim: '#948e7e',
+  faint: '#b8b2a0',
+  subtle: '#857f6f',
+  labelDim: '#7a7466',
+};
+
+const C = { ...DARK_PALETTE };
+
+const THEME_STORAGE_KEY = 'cc_theme';
+
+const loadSavedTheme = () => {
+  try { return localStorage.getItem(THEME_STORAGE_KEY) === 'light' ? 'light' : 'dark'; }
+  catch { return 'dark'; }
+};
+
+// Mutates C in place and syncs the bits of native chrome that live
+// outside React's tree (the <body> background painted before #root
+// mounts, and the PWA/status-bar theme-color meta tag). Safe to call
+// before React has rendered anything.
+const applyThemeColors = (name) => {
+  Object.assign(C, name === 'light' ? LIGHT_PALETTE : DARK_PALETTE);
+  try {
+    document.body.style.background = C.midnight;
+    document.body.style.color = C.bone;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', C.midnight);
+    document.documentElement.setAttribute('data-theme', name);
+  } catch { /* no-op if document isn't ready yet */ }
+};
+
+// Apply whatever was saved before React ever renders, so the first
+// paint already matches — index.html's own bootstrap script (see
+// the <head>) does the equivalent even earlier, before this script
+// has finished loading.
+applyThemeColors(loadSavedTheme());
+
 
 // ─── API CONFIG ──────────────────────────────────────────────
 const API = "https://chasin-curves.emblen-scott.workers.dev";
@@ -222,7 +307,7 @@ const PitPassBanner = ({ member, onDismiss }) => {
         <span style={{ fontSize:24 }}>🎟</span>
         <div style={{ flex:1 }}>
           <div style={{ fontSize:13, color:C.champagne, fontWeight:700 }}>Pit Pass Unlocked!</div>
-          <div style={{ fontSize:11, color:"#ccc", marginTop:2 }}>Complete your profile for 7 days of full Pro access — free.</div>
+          <div style={{ fontSize:11, color:C.boneMuted, marginTop:2 }}>Complete your profile for 7 days of full Pro access — free.</div>
         </div>
         <button onClick={onDismiss} style={{ background:`linear-gradient(135deg, ${C.champagne}, ${C.champagneLight})`, border:"none", borderRadius:8, padding:"8px 14px", color:C.midnight, fontFamily:"'Josefin Sans', sans-serif", fontSize:11, fontWeight:700, cursor:"pointer", textTransform:"uppercase", letterSpacing:"0.08em", flexShrink:0 }}>
           Activate
@@ -248,7 +333,7 @@ const PitPassProgress = ({ member }) => {
         </div>
         <div style={{ fontSize:13, color:C.champagne, fontWeight:700 }}>{progress}/{total}</div>
       </div>
-      <div style={{ height:4, background:"#1e1e1e", borderRadius:2, marginBottom:12 }}>
+      <div style={{ height:4, background:C.border, borderRadius:2, marginBottom:12 }}>
         <div style={{ height:"100%", width:`${pct}%`, background:`linear-gradient(90deg, ${C.champagne}, ${C.champagneLight})`, borderRadius:2, transition:"width 0.4s ease" }} />
       </div>
       {PIT_PASS_REQUIREMENTS.map(req => {
@@ -690,7 +775,7 @@ const Btn = ({ children, onClick, variant = "primary", size = "md", style: sx = 
 
 const Input = ({ label, value, onChange, placeholder, type = "text", multiline, rows = 3, style: sx = {} }) => {
   const inputStyle = {
-    width: "100%", background: "#0f0f0f", border: `1px solid ${C.border}`,
+    width: "100%", background: C.input, border: `1px solid ${C.border}`,
     borderRadius: 6, padding: "8px 12px", color: C.bone, fontSize: 13,
     fontFamily: "'Josefin Sans', sans-serif", outline: "none",
   };
@@ -711,7 +796,7 @@ const Input = ({ label, value, onChange, placeholder, type = "text", multiline, 
 // vehicles (added before this field existed) can be brought up to date.
 const RegoStateField = ({ vehicle, onChange }) => {
   const selectStyle = {
-    width: "100%", background: "#0f0f0f", border: `1px solid ${C.border}`,
+    width: "100%", background: C.input, border: `1px solid ${C.border}`,
     borderRadius: 6, padding: "8px 12px", color: C.bone, fontSize: 13,
     fontFamily: "'Josefin Sans', sans-serif", outline: "none",
   };
@@ -769,7 +854,7 @@ const RatingBar = ({ label, value }) => (
       <span style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>{label}</span>
       <span style={{ fontSize: 12, color: C.champagne, fontWeight: 600 }}>{value.toFixed(1)}</span>
     </div>
-    <div style={{ height: 3, background: "#1e1e1e", borderRadius: 2 }}>
+    <div style={{ height: 3, background: C.border, borderRadius: 2 }}>
       <div style={{ height: "100%", width: `${(value / 5) * 100}%`, background: `linear-gradient(90deg, ${C.champagne}, ${C.champagneLight})`, borderRadius: 2 }} />
     </div>
   </div>
@@ -877,7 +962,7 @@ const CopyTextDialog = ({ title, text, onDone }) => {
         value={text}
         onFocus={e => e.target.select()}
         onKeyDown={e => { if (e.key === "Escape") onDone(); }}
-        style={{ width: "100%", background: "#0f0f0f", border: `1px solid ${C.border}`, borderRadius: 6, padding: "10px 12px", color: C.bone, fontSize: 13, fontFamily: "'Josefin Sans', sans-serif", outline: "none", marginBottom: 20 }}
+        style={{ width: "100%", background: C.input, border: `1px solid ${C.border}`, borderRadius: 6, padding: "10px 12px", color: C.bone, fontSize: 13, fontFamily: "'Josefin Sans', sans-serif", outline: "none", marginBottom: 20 }}
       />
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
         <Btn variant="ghost" onClick={copy}>{copied ? "Copied ✓" : "Copy"}</Btn>
@@ -923,7 +1008,7 @@ const OdometerPromptDialog = ({ title, subtitle, minReading, cancelLabel, onDone
           onChange={e => { setValue(e.target.value); if (error) setError(""); }}
           onKeyDown={e => { if (e.key === "Enter") submit(); else if (e.key === "Escape") onDone(null); }}
           placeholder={minReading != null ? `e.g. ${minReading + 10}` : "e.g. 84210"}
-          style={{ width: "100%", background: "#0f0f0f", border: `1px solid ${error ? C.red : C.border}`, borderRadius: 6, padding: "10px 12px", color: C.bone, fontSize: 16, fontFamily: "'Josefin Sans', sans-serif", outline: "none" }}
+          style={{ width: "100%", background: C.input, border: `1px solid ${error ? C.red : C.border}`, borderRadius: 6, padding: "10px 12px", color: C.bone, fontSize: 16, fontFamily: "'Josefin Sans', sans-serif", outline: "none" }}
         />
       </div>
       {error && <div style={{ fontSize: 12, color: C.red, marginBottom: 16, lineHeight: 1.5 }}>{error}</div>}
@@ -1196,10 +1281,10 @@ const MapView = ({ roads, selected, onSelect, trips, currentUser }) => {
         </div>
       )}
 
-      <div style={{ position: "absolute", top: 10, left: 14, fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: "0.16em", pointerEvents: "none" }}>{selected && !isAU(selected) ? roadPlace(selected) : "Eastern Australia"}</div>
+      <div style={{ position: "absolute", top: 10, left: 14, fontSize: 9, color: C.labelDim, textTransform: "uppercase", letterSpacing: "0.16em", pointerEvents: "none" }}>{selected && !isAU(selected) ? roadPlace(selected) : "Eastern Australia"}</div>
 
       <div style={{ position: "absolute", bottom: 8, right: 14, display: "flex", gap: 10, pointerEvents: "none" }}>
-        {[["QLD",C.champagne],["NSW",C.blue],["TAS","#888"],["VIC","#666"]].map(([s,c]) => (
+        {[["QLD",C.champagne],["NSW",C.blue],["TAS",C.muted],["VIC",C.labelDim]].map(([s,c]) => (
           <span key={s} style={{ fontSize: 9, color: c, letterSpacing: "0.12em", textTransform: "uppercase" }}>{s}</span>
         ))}
       </div>
@@ -1279,13 +1364,13 @@ const RoadReviewForm = ({ road, onRoadUpdated, onRefreshPoints }) => {
   if (loading) return <div style={{ textAlign: "center", padding: 20, color: C.dim, fontSize: 12 }}>Loading…</div>;
 
   return (
-    <div style={{ background: "#0a0a0a", borderRadius: 8, padding: 14, border: `1px solid ${C.border}` }}>
+    <div style={{ background: C.panel2, borderRadius: 8, padding: 14, border: `1px solid ${C.border}` }}>
       <div style={{ fontSize: 10, color: C.champagne, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>
         {hadExisting ? "Your rating" : "Driven this road? Rate it"}
       </div>
       {RATING_LABELS.map(([k, l]) => (
         <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${C.border}` }}>
-          <span style={{ fontSize: 12, color: "#ccc" }}>{l}</span>
+          <span style={{ fontSize: 12, color: C.boneMuted }}>{l}</span>
           <StarPicker value={ratings[k] || 0} onChange={n => setRatings(r => ({ ...r, [k]: n }))} />
         </div>
       ))}
@@ -1356,11 +1441,11 @@ const RoadDetail = ({ road, onClose, currentUser, onOpenProfile, onRoadUpdated, 
       <div style={{ padding: "16px 20px" }}>
         {tab === "overview" && (
           <>
-            <p style={{ color: "#aaa", fontSize: 13, lineHeight: 1.7, marginBottom: 14 }}>{road.description}</p>
+            <p style={{ color: C.boneMuted, fontSize: 13, lineHeight: 1.7, marginBottom: 14 }}>{road.description}</p>
             <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 14 }}>
               {road.tags.map(t => <span key={t} style={{ fontSize: 10, padding: "3px 10px", background: "#1a1a1a", borderRadius: 20, color: C.muted, border: `1px solid ${C.border}`, textTransform: "uppercase", letterSpacing: "0.08em" }}>{t}</span>)}
             </div>
-            <div style={{ background: "#0a0a0a", borderRadius: 8, padding: 12, border: `1px solid ${C.border}` }}>
+            <div style={{ background: C.panel2, borderRadius: 8, padding: 12, border: `1px solid ${C.border}` }}>
               <div style={{ fontSize: 10, color: C.champagne, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>GPS</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 <div>
@@ -1393,10 +1478,10 @@ const RoadDetail = ({ road, onClose, currentUser, onOpenProfile, onRoadUpdated, 
               { label: "🍴 Food & Coffee", color: C.champagne, items: road.food },
               { label: "📍 Group Meetup / Parking", color: C.blue, items: road.meetups },
             ].map(({ label, color, items }) => (
-              <div key={label} style={{ background: "#0a0a0a", borderRadius: 8, padding: 12, border: `1px solid ${C.border}`, marginBottom: 10 }}>
+              <div key={label} style={{ background: C.panel2, borderRadius: 8, padding: 12, border: `1px solid ${C.border}`, marginBottom: 10 }}>
                 <div style={{ fontSize: 10, color, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>{label}</div>
                 {items.map((item, i) => (
-                  <div key={i} style={{ fontSize: 12, color: "#aaa", padding: "4px 0", borderBottom: i < items.length-1 ? `1px solid ${C.border}` : "none" }}>• {item}</div>
+                  <div key={i} style={{ fontSize: 12, color: C.boneMuted, padding: "4px 0", borderBottom: i < items.length-1 ? `1px solid ${C.border}` : "none" }}>• {item}</div>
                 ))}
               </div>
             ))}
@@ -1411,7 +1496,7 @@ const RoadDetail = ({ road, onClose, currentUser, onOpenProfile, onRoadUpdated, 
                   return (
                     <div key={i} style={{ padding: "10px 12px", background: `${clr}12`, border: `1px solid ${clr}40`, borderRadius: 8, marginBottom: 8 }}>
                       <div style={{ fontSize: 11, color: clr, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>{a.type}</div>
-                      <div style={{ fontSize: 13, color: "#ccc" }}>{a.text}</div>
+                      <div style={{ fontSize: 13, color: C.boneMuted }}>{a.text}</div>
                     </div>
                   );
                 })
@@ -1524,7 +1609,7 @@ const MemberProfile = ({ memberId, currentUser, roads, onClose }) => {
           {roadsAdded.length === 0
             ? <div style={{ fontSize:12, color:C.dim, marginBottom:6 }}>No roads added yet.</div>
             : roadsAdded.map(r => (
-                <div key={r.id} style={{ padding:"8px 0", borderBottom:`1px solid ${C.border}`, fontSize:13, color:"#ccc" }}>
+                <div key={r.id} style={{ padding:"8px 0", borderBottom:`1px solid ${C.border}`, fontSize:13, color:C.boneMuted }}>
                   {r.name} <span style={{ color:C.dim, fontSize:11 }}>· {r.region}</span>
                 </div>
               ))}
@@ -1685,7 +1770,7 @@ const GarageView = ({ member, onUpdate, onRefresh, onRefreshPoints, onSelectVehi
                 <img src={vHero} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "brightness(0.25)" }} />
               </div>
             )}
-            {!vHero && <div style={{ position: "absolute", inset: 0, background: "#0a0a0a" }} />}
+            {!vHero && <div style={{ position: "absolute", inset: 0, background: C.panel2 }} />}
             <div style={{ position: "relative", zIndex: 1, padding: 16, display: "flex", gap: 14, alignItems: "flex-start" }}>
               <div style={{ flexShrink: 0 }}>
                 <VehicleAvatar vehicle={v} size={56} />
@@ -1925,7 +2010,7 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onRefreshPoints, onBack, onR
     <div style={{ position: "absolute", inset: 0, background: C.midnight, zIndex: 20, display: "flex", flexDirection: "column", overflowY: "auto" }}>
 
       {/* Hero photo wallpaper */}
-      <div style={{ position: "relative", width: "100%", height: 260, flexShrink: 0, background: "#0a0a0a", overflow: "hidden" }}>
+      <div style={{ position: "relative", width: "100%", height: 260, flexShrink: 0, background: C.panel2, overflow: "hidden" }}>
         {hero
           ? <img src={hero} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
           : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 10 }}>
@@ -2055,13 +2140,13 @@ const VehicleDetail = ({ vehicle, member, onUpdate, onRefreshPoints, onBack, onR
           </div>
 
           {vehicle.notes && (
-            <div style={{ marginTop: 20, padding: 14, background: "#0a0a0a", borderRadius: 8, border: "1px solid " + C.border }}>
+            <div style={{ marginTop: 20, padding: 14, background: C.panel2, borderRadius: 8, border: "1px solid " + C.border }}>
               <div style={{ fontSize: 10, color: C.champagne, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6 }}>Notes</div>
               <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{vehicle.notes}</div>
             </div>
           )}
 
-          <div style={{ marginTop: 20, padding: 14, background: "#0a0a0a", borderRadius: 8, border: "1px solid " + C.border }}>
+          <div style={{ marginTop: 20, padding: 14, background: C.panel2, borderRadius: 8, border: "1px solid " + C.border }}>
             <div style={{ fontSize: 10, color: C.champagne, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 10 }}>Registration (for Logbook day-cap tracking)</div>
             <RegoStateField vehicle={vehicle} onChange={patch => updateVehicle({ ...vehicle, ...patch })} />
           </div>
@@ -2115,7 +2200,7 @@ const LogTripModal = ({ member, logbook, onClose, onSubmit }) => {
     setOdometer(lr != null ? String(lr) : "");
   }, [vehicleId]);
 
-  const selectStyle = { width:"100%", background:"#0f0f0f", border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 12px", color:C.bone, fontSize:13, fontFamily:"'Josefin Sans', sans-serif", outline:"none" };
+  const selectStyle = { width:"100%", background:C.input, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 12px", color:C.bone, fontSize:13, fontFamily:"'Josefin Sans', sans-serif", outline:"none" };
 
   const handleSubmit = async () => {
     if (!vehicle) { appAlert("Select a vehicle first."); return; }
@@ -2236,7 +2321,7 @@ const VehicleDayCapCard = ({ vehicle, logbook }) => {
         <div style={{ fontSize: 13, color: C.bone }}>{label} · {vehicle.regoState}</div>
         <div style={{ fontSize: 12, color: over ? C.red : C.champagne, fontWeight: 700 }}>{used}/{cap} days</div>
       </div>
-      <div style={{ height: 3, background: "#1e1e1e", borderRadius: 2 }}>
+      <div style={{ height: 3, background: C.border, borderRadius: 2 }}>
         <div style={{ height: "100%", width: `${Math.min(100, (used / cap) * 100)}%`, background: over ? C.red : `linear-gradient(90deg, ${C.champagne}, ${C.champagneLight})`, borderRadius: 2 }} />
       </div>
       <div style={{ fontSize: 10, color: C.dim, marginTop: 5 }}>{resetLabel}</div>
@@ -3833,7 +3918,7 @@ const RoadSegmentPicker = ({ trail, onConfirm, onCancel }) => {
       });
       map.addLayer({
         id: "full-trail-line", type: "line", source: "full-trail",
-        paint: { "line-color": C.dim || "#555", "line-width": 2, "line-opacity": 0.5 },
+        paint: { "line-color": C.dim || C.dim, "line-width": 2, "line-opacity": 0.5 },
       });
 
       map.addSource("segment", { type: "geojson", data: segmentGeoJSON(segment) });
@@ -4270,7 +4355,7 @@ const LiveTripView = ({ activeTrip, entry, vehicle, member, onClose }) => {
 
   return (
     <Modal title="Live Trip Log" subtitle="For on-the-spot verification" onClose={onClose} wide>
-      <div style={{ background: "#0a0a0a", border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 14 }}>
+      <div style={{ background: C.panel2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 14 }}>
         <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 18, color: C.champagne }}>
           {[vehicle?.year, vehicle?.make, vehicle?.model].filter(Boolean).join(" ") || "Vehicle"}
         </div>
@@ -5051,7 +5136,7 @@ const TripPlanner = ({ roads, trips, setTrips, currentUser, onRefreshPoints }) =
         const canDelete = isHost && (isCancelled || isPast);
 
         return (
-          <div key={trip.id} style={{ background: "#0a0a0a", border: `1px solid ${C.border}`, borderRadius: 10, padding: 16, marginBottom: 12 }}>
+          <div key={trip.id} style={{ background: C.panel2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 16, marginBottom: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
               <div>
                 <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 17, fontWeight: 600, color: C.bone, marginBottom: 2 }}>{trip.title}</div>
@@ -5302,7 +5387,7 @@ const FAST_MONEY = [
   { id:"q28", category:"Life",   question:"Early bird or night owl?",      optA:"Early Bird 🐦",          optB:"Night Owl 🦉" },
 ];
 
-const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints }) => {
+const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints, theme, onToggleTheme }) => {
   const [redeeming, setRedeeming] = useState(false);
   const [redeemError, setRedeemError] = useState("");
   const [redeemSuccess, setRedeemSuccess] = useState(null); // { monthsGranted }
@@ -5437,7 +5522,7 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
 
         {tab==="profile" && (
           <>
-            <div style={{ background: isMemberPro(member) ? `linear-gradient(135deg, ${C.champagne}22, ${C.champagne}08)` : "#0a0a0a", border:`1px solid ${isMemberPro(member) ? C.champagne+"66" : C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
+            <div style={{ background: isMemberPro(member) ? `linear-gradient(135deg, ${C.champagne}22, ${C.champagne}08)` : C.panel2, border:`1px solid ${isMemberPro(member) ? C.champagne+"66" : C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                 <div>
                   <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne }}>🎟 Membership</div>
@@ -5448,7 +5533,19 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
                 )}
               </div>
             </div>
-            <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
+            <div style={{ background:C.panel2, border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <div>
+                  <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne }}>☀ Appearance</div>
+                  <div style={{ fontSize:12, color:C.dim, marginTop:2 }}>{theme === "light" ? "Light" : "Dark"} — saved on this device only</div>
+                </div>
+                <div style={{ display:"flex", background:C.input, borderRadius:20, padding:3, border:`1px solid ${C.border}` }}>
+                  <button onClick={() => theme !== "dark" && onToggleTheme()} style={{ border:"none", cursor:"pointer", borderRadius:16, padding:"6px 14px", fontSize:12, fontFamily:"'Josefin Sans', sans-serif", textTransform:"uppercase", letterSpacing:"0.06em", background: theme !== "light" ? C.champagne : "transparent", color: theme !== "light" ? C.midnight : C.dim }}>Dark</button>
+                  <button onClick={() => theme !== "light" && onToggleTheme()} style={{ border:"none", cursor:"pointer", borderRadius:16, padding:"6px 14px", fontSize:12, fontFamily:"'Josefin Sans', sans-serif", textTransform:"uppercase", letterSpacing:"0.06em", background: theme === "light" ? C.champagne : "transparent", color: theme === "light" ? C.midnight : C.dim }}>Light</button>
+                </div>
+              </div>
+            </div>
+            <div style={{ background:C.panel2, border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
                 <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne }}>About Me</div>
                 <Btn size="sm" variant="ghost" onClick={()=>setEditing(!editing)}>{editing?"Cancel":"Edit"}</Btn>
@@ -5469,7 +5566,7 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
                 </>
               ) : (
                 <>
-                  <div style={{ fontSize:13, color:"#aaa", lineHeight:1.7, marginBottom:12 }}>{member.bio||"No bio yet — tap Edit to add one."}</div>
+                  <div style={{ fontSize:13, color:C.boneMuted, lineHeight:1.7, marginBottom:12 }}>{member.bio||"No bio yet — tap Edit to add one."}</div>
                   {[["💼 Occupation",member.occupation],["⏳ Enthusiast For",member.yearsEnthusiast?`${member.yearsEnthusiast} years`:null],["🏛 Favourite Era",member.favoriteEra],["📸 Instagram",member.instagram],["🎬 YouTube / Web",member.website]].filter(([,v])=>v).map(([label,value])=>(
                     <div key={label} style={{ display:"flex", gap:10, padding:"6px 0", borderBottom:`1px solid ${C.border}` }}>
                       <span style={{ fontSize:12, color:C.dim, minWidth:130 }}>{label}</span>
@@ -5480,7 +5577,7 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
                 </>
               )}
             </div>
-            <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
+            <div style={{ background:C.panel2, border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
               <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne, marginBottom:8 }}>Privacy</div>
               <div style={{ fontSize:12, color:C.dim, marginBottom:12, lineHeight:1.6 }}>
                 If you drive something worth a second look — a GT-HO, an E-Type, anything a thief would remember — you might not want your garage's location showing up on a shared trip. This obscures your home from every map and route Chasin' Curves shows, including your own trip postcards. You set the radius yourself — a suburban block needs a lot less than a rural property.
@@ -5519,12 +5616,12 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
                 </div>
               )}
             </div>
-            <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
+            <div style={{ background:C.panel2, border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
               <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne, marginBottom:12 }}>Community Stats</div>
 
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
                 {[["🛣",member.roadsAdded?.length||0,"Roads"],["✍️",member.reviewsWritten||0,"Reviews"],["🏁",member.tripsPlanned||0,"Trips"],["🚗",member.garage?.length||0,"Vehicles"],["⭐",member.points||0,"Points"],["🏆",getTier(member.points).name,"Tier"]].map(([icon,val,label])=>(
-                  <div key={label} style={{ background:"#111", borderRadius:8, padding:"10px 8px", textAlign:"center", border:`1px solid ${C.border}` }}>
+                  <div key={label} style={{ background:C.panel, borderRadius:8, padding:"10px 8px", textAlign:"center", border:`1px solid ${C.border}` }}>
                     <div style={{ fontSize:18 }}>{icon}</div>
                     <div style={{ fontSize:16, fontFamily:"'Cormorant Garamond', serif", color:C.champagne, fontWeight:600, marginTop:4 }}>{val}</div>
                     <div style={{ fontSize:9, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em", marginTop:2 }}>{label}</div>
@@ -5532,7 +5629,7 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
                 ))}
               </div>
             </div>
-            <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
+            <div style={{ background:C.panel2, border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
               <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne, marginBottom:8 }}>Invite a Mate</div>
               <div style={{ fontSize:12, color:C.dim, marginBottom:12, lineHeight:1.6 }}>Send a personal invite — they'll see your name on the way in, not just a bare link.</div>
               <Btn onClick={handleInvite} style={{ width:"100%" }}>{inviteState === "copied" ? "Link copied ✓" : "📤 Invite a Mate"}</Btn>
@@ -5550,7 +5647,7 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
               {SKILLS_LIST.map(skill => {
                 const active = (member.skills||[]).includes(skill.id);
                 return (
-                  <div key={skill.id} onClick={()=>toggleSkill(skill.id)} style={{ padding:"12px 14px", borderRadius:10, border:`2px solid ${active?C.champagne:C.border}`, background:active?C.champagneDim:"#0a0a0a", cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}>
+                  <div key={skill.id} onClick={()=>toggleSkill(skill.id)} style={{ padding:"12px 14px", borderRadius:10, border:`2px solid ${active?C.champagne:C.border}`, background:active?C.champagneDim:C.panel2, cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}>
                     <span style={{ fontSize:22 }}>{skill.icon}</span>
                     <div style={{ flex:1, fontSize:13, color:active?C.champagne:C.bone, fontWeight:active?600:400 }}>{skill.label}</div>
                     {active && <span style={{ color:C.champagne, fontSize:13 }}>✓</span>}
@@ -5559,7 +5656,7 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
               })}
             </div>
             {(member.skills||[]).length > 0 && (
-              <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:10, padding:14 }}>
+              <div style={{ background:C.panel2, border:`1px solid ${C.border}`, borderRadius:10, padding:14 }}>
                 <div style={{ fontSize:11, color:C.champagne, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:10 }}>Your Skills Badge</div>
                 <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
                   {(member.skills||[]).map(id => { const s=SKILLS_LIST.find(x=>x.id===id); return s?<span key={id} style={{ fontSize:11, padding:"4px 10px", background:C.champagneDim, border:`1px solid ${C.champagne}44`, borderRadius:20, color:C.champagne }}>{s.icon} {s.label}</span>:null; })}
@@ -5591,7 +5688,7 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
                     const answer = member.fastMoney?.[q.id];
                     const isColdplay = q.id === "q16" && answer === "B";
                     return (
-                      <div key={q.id} style={{ background:"#0a0a0a", border:`1px solid ${isColdplay ? C.red : C.border}`, borderRadius:10, padding:14, marginBottom:10 }}>
+                      <div key={q.id} style={{ background:C.panel2, border:`1px solid ${isColdplay ? C.red : C.border}`, borderRadius:10, padding:14, marginBottom:10 }}>
                         <div style={{ fontSize:12, color:C.muted, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:8 }}>{q.question}</div>
                         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
                           {[["A",q.optA],["B",q.optB]].map(([side,label]) => {
@@ -5601,7 +5698,7 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
                               <div key={side} onClick={()=>setFastMoney(q.id,side)}
                                 style={{ padding:"10px 12px", borderRadius:8, cursor:"pointer", textAlign:"center",
                                   border:`2px solid ${sel ? (dangerChoice ? C.red : C.champagne) : C.border2}`,
-                                  background: sel ? (dangerChoice ? C.redDim : C.champagneDim) : "#111" }}>
+                                  background: sel ? (dangerChoice ? C.redDim : C.champagneDim) : C.panel }}>
                                 <div style={{ fontSize:13, lineHeight:1.3, fontWeight:sel?700:400,
                                   color: sel ? (dangerChoice ? C.red : C.champagne) : C.bone }}>
                                   {label}
@@ -5633,7 +5730,7 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
 
         {tab==="points" && (
           <>
-            <div style={{ background:"#0a0a0a", border:`1px solid ${tier.color}44`, borderRadius:12, padding:16, marginBottom:14 }}>
+            <div style={{ background:C.panel2, border:`1px solid ${tier.color}44`, borderRadius:12, padding:16, marginBottom:14 }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
                 <div>
                   <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:18, color:tier.color }}>{tier.icon} {tier.name}</div>
@@ -5644,7 +5741,7 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
                   <div style={{ fontSize:10, color:C.dim }}>total points</div>
                 </div>
               </div>
-              <div style={{ height:4, background:"#1e1e1e", borderRadius:2, marginBottom:14 }}>
+              <div style={{ height:4, background:C.border, borderRadius:2, marginBottom:14 }}>
                 <div style={{ height:"100%", width:`${progress}%`, background:`linear-gradient(90deg, ${tier.color}, ${C.champagneLight})`, borderRadius:2 }} />
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:6 }}>
@@ -5654,7 +5751,7 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
                   <div style={{ fontSize:9, color:C.dim }}>{t.min===0?"0":t.min.toLocaleString()}</div>
                 </div>)}
               </div>
-              <div style={{ marginTop:12, padding:10, background:"#111", borderRadius:8, fontSize:11, color:C.dim, lineHeight:1.6 }}>
+              <div style={{ marginTop:12, padding:10, background:C.panel, borderRadius:8, fontSize:11, color:C.dim, lineHeight:1.6 }}>
                 🏆 Your lifetime tally — points never expire.
               </div>
             </div>
@@ -5663,7 +5760,7 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
                 Points tab rather than the Membership card. Uses
                 member.proPoints, not member.points — see worker.js. */}
             {!member.proLifetime && (
-              <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
+              <div style={{ background:C.panel2, border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
                 <div style={{ fontSize:13, color:C.bone, marginBottom:4 }}>Points → Pro</div>
                 <div style={{ fontSize:11, color:C.dim, marginBottom:10, lineHeight:1.6 }}>
                   {POINTS_PER_PRO_MONTH.toLocaleString()} points redeems 1 free month of Pro (Trip Postcards, Logbook, TGM).
@@ -5684,7 +5781,7 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
                 {redeemSuccess && <div style={{ fontSize:11, color:C.champagne, marginTop:8 }}>Redeemed {redeemSuccess.monthsGranted} free month{redeemSuccess.monthsGranted !== 1 ? "s" : ""} of Pro.</div>}
               </div>
             )}
-            <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
+            <div style={{ background:C.panel2, border:`1px solid ${C.border}`, borderRadius:12, padding:16, marginBottom:14 }}>
               <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne, marginBottom:12 }}>How to Earn</div>
               {Object.entries(POINT_ACTIONS).map(([key,{points,label,icon}])=>(
                 <div key={key} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 0", borderBottom:`1px solid ${C.border}` }}>
@@ -5695,7 +5792,7 @@ const ProfileView = ({ member, onUpdate, pointsLog, onUpgrade, onRedeemPoints })
               ))}
             </div>
             {pointsLog.length>0 && (
-              <div style={{ background:"#0a0a0a", border:`1px solid ${C.border}`, borderRadius:12, padding:16 }}>
+              <div style={{ background:C.panel2, border:`1px solid ${C.border}`, borderRadius:12, padding:16 }}>
                 <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:16, color:C.champagne, marginBottom:12 }}>Recent Activity</div>
                 {pointsLog.slice(-10).reverse().map((entry,i)=>{
                   const action=POINT_ACTIONS[entry.action];
@@ -5790,14 +5887,14 @@ const AddRoadModal = ({ onClose, onAdd, currentUser, initialValues }) => {
         <Input label="Region *" value={form.region} onChange={v=>set("region",v)} placeholder="Sunshine Coast Hinterland" />
         <div>
           <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>Country</div>
-          <select value={form.country || "AU"} onChange={e=>set("country",e.target.value)} style={{ width:"100%", background:"#0f0f0f", border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 12px", color:C.bone, fontSize:13, marginBottom:14 }}>
+          <select value={form.country || "AU"} onChange={e=>set("country",e.target.value)} style={{ width:"100%", background:C.input, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 12px", color:C.bone, fontSize:13, marginBottom:14 }}>
             {Object.entries(COUNTRIES).map(([code,name])=><option key={code} value={code}>{name}</option>)}
           </select>
         </div>
         {(form.country || "AU") === "AU" && (
           <div>
             <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 5 }}>State</div>
-            <select value={form.state} onChange={e=>set("state",e.target.value)} style={{ width:"100%", background:"#0f0f0f", border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 12px", color:C.bone, fontSize:13, marginBottom:14 }}>
+            <select value={form.state} onChange={e=>set("state",e.target.value)} style={{ width:"100%", background:C.input, border:`1px solid ${C.border}`, borderRadius:6, padding:"8px 12px", color:C.bone, fontSize:13, marginBottom:14 }}>
               {["QLD","NSW","VIC","TAS","SA","WA","NT","ACT"].map(s=><option key={s}>{s}</option>)}
             </select>
           </div>
@@ -5868,7 +5965,7 @@ const SplashScreen = ({ inviterName, runInvite, onContinue }) => {
           <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:46, fontWeight:700, color:C.champagne, lineHeight:1 }}>
             Chasin<span style={{ color:C.red }}>'</span> Curves
           </div>
-          <div style={{ fontSize:11, color:"#555", letterSpacing:"0.22em", textTransform:"uppercase", marginTop:8, marginBottom:28 }}>Roads, Rivers &amp; Riffs</div>
+          <div style={{ fontSize:11, color:C.dim, letterSpacing:"0.22em", textTransform:"uppercase", marginTop:8, marginBottom:28 }}>Roads, Rivers &amp; Riffs</div>
 
           <div style={{ width:"100%", maxWidth:320, margin:"0 auto 28px", opacity:0.18 }}>
             <svg viewBox="0 0 340 40" style={{ width:"100%" }}>
@@ -5911,7 +6008,7 @@ const SplashScreen = ({ inviterName, runInvite, onContinue }) => {
         {/* Editorial pillars grid */}
         <div style={{ margin:"40px 20px 0", display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
           {PILLARS.map(p => (
-            <div key={p.title} style={{ padding:"18px 16px", background:"#111", border:`1px solid ${C.border}`, borderRadius:12 }}>
+            <div key={p.title} style={{ padding:"18px 16px", background:C.panel, border:`1px solid ${C.border}`, borderRadius:12 }}>
               <div style={{ fontSize:22, marginBottom:8 }}>{p.emoji}</div>
               <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:18, fontWeight:700, color:C.champagne, marginBottom:4 }}>{p.title}</div>
               <div style={{ fontSize:12, color:C.dim, lineHeight:1.5 }}>{p.blurb}</div>
@@ -5945,7 +6042,7 @@ const SplashScreen = ({ inviterName, runInvite, onContinue }) => {
             style={{ width:"100%", padding:"16px 0", background:`linear-gradient(135deg, ${C.champagne}, ${C.champagneLight})`, border:"none", borderRadius:10, color:C.midnight, fontFamily:"'Josefin Sans', sans-serif", fontSize:14, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.1em", cursor:"pointer" }}>
             Join the Garage — It's Free →
           </button>
-          <div style={{ marginTop:16, fontSize:10, color:"#2a2a2a", textAlign:"center", letterSpacing:"0.08em" }}>NO ADS · NO AUTO-RENEWAL · NO NONSENSE</div>
+          <div style={{ marginTop:16, fontSize:10, color:C.border2, textAlign:"center", letterSpacing:"0.08em" }}>NO ADS · NO AUTO-RENEWAL · NO NONSENSE</div>
         </div>
       </div>
     </div>
@@ -6024,12 +6121,12 @@ const TOUR_911 = { year: "2019", make: "Porsche", model: "911", colour: "Midnigh
 const TourAppHeader = () => (
   <div style={{ padding: "12px 16px 10px", borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
     <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 19, fontWeight: 600, color: C.champagne, lineHeight: 1 }}>Chasin<span style={{ color: C.red }}>'</span> Curves</div>
-    <div style={{ fontSize: 8, color: "#555", letterSpacing: "0.2em", textTransform: "uppercase", marginTop: 3 }}>Roads, Rivers &amp; Riffs</div>
+    <div style={{ fontSize: 8, color: C.dim, letterSpacing: "0.2em", textTransform: "uppercase", marginTop: 3 }}>Roads, Rivers &amp; Riffs</div>
   </div>
 );
 
 const TourNav = ({ active }) => (
-  <div style={{ display: "flex", borderTop: `1px solid ${C.border}`, background: "#0d0d0d", flexShrink: 0, padding: "8px 0 10px" }}>
+  <div style={{ display: "flex", borderTop: `1px solid ${C.border}`, background: C.midnight, flexShrink: 0, padding: "8px 0 10px" }}>
     {[["🛣️", "Roads"], ["🏁", "Trips"], ["🚗", "Garage"], ["📋", "Logbook"], ["👤", "Profile"]].map(([icon, label]) => (
       <div key={label} style={{ flex: 1, textAlign: "center", opacity: label === active ? 1 : 0.55 }}>
         <div style={{ fontSize: 17, lineHeight: 1 }}>{icon}</div>
@@ -6043,7 +6140,7 @@ const TourNav = ({ active }) => (
 const tourBtnStyle = { cursor: "default" }; // mock buttons — look like the real ones, do nothing
 
 const TourRunCard = ({ title, when, organiser, vehicle, going, roadNames, joining, notes, host, joined }) => (
-  <div style={{ background: "#0a0a0a", border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 10 }}>
+  <div style={{ background: C.panel2, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 10 }}>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
       <div>
         <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 17, fontWeight: 600, color: C.bone, marginBottom: 2 }}>{title}</div>
@@ -6082,7 +6179,7 @@ const TourDayCap = ({ label, used, cap }) => (
       <div style={{ fontSize: 13, color: C.bone }}>{label}</div>
       <div style={{ fontSize: 12, color: C.champagne, fontWeight: 700 }}>{used}/{cap} days</div>
     </div>
-    <div style={{ height: 3, background: "#1e1e1e", borderRadius: 2 }}>
+    <div style={{ height: 3, background: C.border, borderRadius: 2 }}>
       <div style={{ height: "100%", width: `${Math.min(100, (used / cap) * 100)}%`, background: `linear-gradient(90deg, ${C.champagne}, ${C.champagneLight})`, borderRadius: 2 }} />
     </div>
     <div style={{ fontSize: 10, color: C.dim, marginTop: 5 }}>Rolling 365-day count, not a fixed calendar year — cross-check against your actual rego period</div>
@@ -6099,7 +6196,7 @@ const TOUR_SLIDES = [
     fit: true,
     photoUrl: null,
     bg: () => (
-      <div style={{ position:"absolute", inset:0, background:"#0a0a0a", display:"flex", flexDirection:"column", justifyContent:"center", gap:8, padding:"0 6%" }}>
+      <div style={{ position:"absolute", inset:0, background:C.panel2, display:"flex", flexDirection:"column", justifyContent:"center", gap:8, padding:"0 6%" }}>
         {[
           { code:"BZ", name:"2005 BMW Z4", spec:"E85 3.0i · Imola Red", color:C.red, photo:SCOTT_Z4_PHOTO },
           { code:"JX", name:"2004 Jaguar X350", spec:"3.5l V8 · Champagne", color:C.champagne, primary:true, photo:SCOTT_JAGUAR_PHOTO },
@@ -6116,7 +6213,7 @@ const TOUR_SLIDES = [
                 imagery that doesn't exist yet. */}
             {v.photo
               ? <img src={v.photo} alt="" style={{ position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", filter:"brightness(0.3)" }} />
-              : <div style={{ position:"absolute", inset:0, background:"#111" }} />}
+              : <div style={{ position:"absolute", inset:0, background:C.panel }} />}
             <div style={{ width:34, height:34, borderRadius:"50%", border:`1px solid ${v.color}`, color:v.color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, flexShrink:0, position:"relative", background:"rgba(0,0,0,0.4)" }}>{v.code}</div>
             <div style={{ flex:1, minWidth:0, position:"relative" }}>
               <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:14, fontWeight:600, color:C.bone, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{v.name}</div>
@@ -6133,7 +6230,7 @@ const TOUR_SLIDES = [
     meta: "Your Music, Too",
     pan: "panTB",
     photoUrl: SCOTT_GUITAR_PHOTO_1,
-    bg: () => <div style={{ position:"absolute", inset:0, background:"#0d0d0d" }} />,
+    bg: () => <div style={{ position:"absolute", inset:0, background:C.midnight }} />,
     caption: { title: "1986 My Guitars Tele's and Strat's", subtitle: "Telecaster, Stratocaster, Custom Build · Multiple", eyebrow: "🎸 Riffs" },
   },
   {
@@ -6152,7 +6249,7 @@ const TOUR_SLIDES = [
     fit: true,
     photoUrl: "https://scvd.app/images/cc-postcard-z4.jpg",
     photoFallback: SCOTT_JAG_POSTCARD,
-    bg: () => <div style={{ position:"absolute", inset:0, background:"#0d0d0d" }} />,
+    bg: () => <div style={{ position:"absolute", inset:0, background:C.midnight }} />,
     caption: null, // the postcard already has its own title/stats/route baked in — no need to double up
   },
   {
@@ -6166,7 +6263,7 @@ const TOUR_SLIDES = [
     fit: true,
     photoUrl: null,
     bg: () => (
-      <div style={{ position:"absolute", inset:0, background:"#0d0d0d", display:"flex", flexDirection:"column" }}>
+      <div style={{ position:"absolute", inset:0, background:C.midnight, display:"flex", flexDirection:"column" }}>
         <TourAppHeader />
         <div style={{ flex:1, minHeight:0, overflow:"hidden", padding:"16px 16px 0" }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
@@ -6212,7 +6309,7 @@ const TOUR_SLIDES = [
     fit: true,
     photoUrl: null,
     bg: () => (
-      <div style={{ position:"absolute", inset:0, background:"#0d0d0d", display:"flex", flexDirection:"column" }}>
+      <div style={{ position:"absolute", inset:0, background:C.midnight, display:"flex", flexDirection:"column" }}>
         <TourAppHeader />
         <div style={{ flex:1, minHeight:0, overflow:"hidden", padding:"16px 16px 0" }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, gap:8 }}>
@@ -6262,7 +6359,7 @@ const TOUR_SLIDES = [
     meta: "Roads",
     fit: true,
     photoUrl: "https://scvd.app/images/cc-roads.jpg",
-    bg: () => <div style={{ position:"absolute", inset:0, background:"#0d0d0d" }} />,
+    bg: () => <div style={{ position:"absolute", inset:0, background:C.midnight }} />,
     caption: null,
   },
 ];
@@ -6382,7 +6479,7 @@ const LoginScreen = ({ onRequestCode, onVerifyCode, onResend, step, loading, err
         <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:42, fontWeight:700, color:C.champagne, lineHeight:1 }}>
           Chasin<span style={{ color:C.red }}>'</span> Curves
         </div>
-        <div style={{ fontSize:11, color:"#444", letterSpacing:"0.2em", textTransform:"uppercase", marginTop:8 }}>Roads, Rivers & Riffs</div>
+        <div style={{ fontSize:11, color:C.subtle, letterSpacing:"0.2em", textTransform:"uppercase", marginTop:8 }}>Roads, Rivers & Riffs</div>
       </div>
 
       {/* Road lines */}
@@ -6395,7 +6492,7 @@ const LoginScreen = ({ onRequestCode, onVerifyCode, onResend, step, loading, err
       </div>
 
       {/* Input card */}
-      <div style={{ width:"100%", maxWidth:340, background:"#111", border:`1px solid ${C.border}`, borderRadius:14, padding:24 }}>
+      <div style={{ width:"100%", maxWidth:340, background:C.panel, border:`1px solid ${C.border}`, borderRadius:14, padding:24 }}>
         {step === "email" ? (
           <>
             <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:20, color:C.champagne, marginBottom:6 }}>Enter the Garage</div>
@@ -6410,7 +6507,7 @@ const LoginScreen = ({ onRequestCode, onVerifyCode, onResend, step, loading, err
                 onKeyDown={e => e.key === "Enter" && submitEmail()}
                 placeholder="you@example.com"
                 autoFocus
-                style={{ width:"100%", background:"#0a0a0a", border:`1px solid ${error ? C.red : C.border}`, borderRadius:8, padding:"11px 14px", color:C.bone, fontSize:15, fontFamily:"'Josefin Sans', sans-serif", outline:"none", boxSizing:"border-box", letterSpacing:"0.02em" }}
+                style={{ width:"100%", background:C.panel2, border:`1px solid ${error ? C.red : C.border}`, borderRadius:8, padding:"11px 14px", color:C.bone, fontSize:15, fontFamily:"'Josefin Sans', sans-serif", outline:"none", boxSizing:"border-box", letterSpacing:"0.02em" }}
               />
             </div>
 
@@ -6439,7 +6536,7 @@ const LoginScreen = ({ onRequestCode, onVerifyCode, onResend, step, loading, err
                 onKeyDown={e => e.key === "Enter" && submitCode()}
                 placeholder="123456"
                 autoFocus
-                style={{ width:"100%", background:"#0a0a0a", border:`1px solid ${error ? C.red : C.border}`, borderRadius:8, padding:"11px 14px", color:C.bone, fontSize:22, fontFamily:"'Courier New', monospace", letterSpacing:"0.4em", textAlign:"center", outline:"none", boxSizing:"border-box" }}
+                style={{ width:"100%", background:C.panel2, border:`1px solid ${error ? C.red : C.border}`, borderRadius:8, padding:"11px 14px", color:C.bone, fontSize:22, fontFamily:"'Courier New', monospace", letterSpacing:"0.4em", textAlign:"center", outline:"none", boxSizing:"border-box" }}
               />
             </div>
 
@@ -6462,7 +6559,7 @@ const LoginScreen = ({ onRequestCode, onVerifyCode, onResend, step, loading, err
         )}
       </div>
 
-      <div style={{ marginTop:20, fontSize:10, color:"#2a2a2a", textAlign:"center", letterSpacing:"0.08em" }}>NO ADS · NO AUTO-RENEWAL · NO NONSENSE</div>
+      <div style={{ marginTop:20, fontSize:10, color:C.border2, textAlign:"center", letterSpacing:"0.08em" }}>NO ADS · NO AUTO-RENEWAL · NO NONSENSE</div>
       </div>
     </div>
   );
@@ -6470,6 +6567,20 @@ const LoginScreen = ({ onRequestCode, onVerifyCode, onResend, step, loading, err
 
 // ─── MAIN APP ─────────────────────────────────────────────────
 const App = () => {
+  // v3.1: light/dark theme. themeName is only used to trigger a
+  // re-render — the actual colour values live on the mutable `C`
+  // object, which toggleTheme() updates synchronously (before this
+  // state change) so the one re-render it causes already reads the
+  // new colours. No memoized components anywhere in this file, so
+  // that single re-render reaches every screen.
+  const [themeName, setThemeName] = useState(loadSavedTheme);
+  const toggleTheme = useCallback(() => {
+    const next = themeName === 'light' ? 'dark' : 'light';
+    applyThemeColors(next);
+    try { localStorage.setItem(THEME_STORAGE_KEY, next); } catch {}
+    setThemeName(next);
+  }, [themeName]);
+
   const [roads, setRoads] = useState(SEED_ROADS);
   const [trips, setTrips] = useState([]);
   const [pointsLog, setPointsLog] = useState([]);
@@ -7021,7 +7132,7 @@ const App = () => {
         <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:32, fontWeight:700, color:C.champagne }}>
           Chasin<span style={{ color:C.red }}>'</span> Curves
         </div>
-        <div style={{ fontSize:10, color:"#444", letterSpacing:"0.18em", textTransform:"uppercase" }}>Roads, Rivers & Riffs</div>
+        <div style={{ fontSize:10, color:C.subtle, letterSpacing:"0.18em", textTransform:"uppercase" }}>Roads, Rivers & Riffs</div>
         <div style={{ marginTop:20, display:"flex", gap:6 }}>
           {[0,1,2].map(i => (
             <div key={i} style={{ width:8, height:8, borderRadius:"50%", background:C.champagne, opacity:0.3, animation:`pulse 1.2s ease-in-out ${i*0.2}s infinite` }} />
@@ -7055,7 +7166,7 @@ const App = () => {
           <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:22, fontWeight:700, color:C.champagne, lineHeight:1 }}>
             Chasin<span style={{ color:C.red }}>'</span> Curves
           </div>
-          <div style={{ fontSize:9, color:"#444", letterSpacing:"0.18em", textTransform:"uppercase", marginTop:2 }}>Roads, Rivers & Riffs</div>
+          <div style={{ fontSize:9, color:C.subtle, letterSpacing:"0.18em", textTransform:"uppercase", marginTop:2 }}>Roads, Rivers & Riffs</div>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
           <PointsBadge pts={currentUser.points} />
@@ -7134,7 +7245,7 @@ const App = () => {
 
       {screen === "roads" && !showRoadDetail && (
         <div style={{ padding:"10px 16px", borderBottom:`1px solid ${C.border}`, display:"flex", gap:8, alignItems:"center", flexShrink:0, flexWrap:"wrap" }}>
-          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search roads..." style={{ flex:1, minWidth:120, background:"#111", border:`1px solid ${C.border}`, borderRadius:6, padding:"6px 11px", color:C.bone, fontSize:12, outline:"none" }} />
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search roads..." style={{ flex:1, minWidth:120, background:C.panel, border:`1px solid ${C.border}`, borderRadius:6, padding:"6px 11px", color:C.bone, fontSize:12, outline:"none" }} />
           {states.map(s => (
             <button key={s} onClick={()=>setFilterState(s)} style={{ padding:"5px 10px", borderRadius:6, border:"1px solid", borderColor:filterState===s?C.champagne:C.border2, background:filterState===s?C.champagneDim:"none", color:filterState===s?C.champagne:C.dim, fontSize:10, cursor:"pointer", textTransform:"uppercase", letterSpacing:"0.08em" }}>{s}</button>
           ))}
@@ -7175,7 +7286,7 @@ const App = () => {
                       {hasRatings(r) && <StarRating value={avgRating(r)} size={12} />}
                       <span style={{ fontSize:11, color:C.dim }}>{hasRatings(r) ? `${avgRating(r).toFixed(1)} · ${r.reviews} reviews` : "Not yet rated"}</span>
                     </div>
-                    <span style={{ fontSize:11, color:"#444" }}>{r.distance}</span>
+                    <span style={{ fontSize:11, color:C.subtle }}>{r.distance}</span>
                   </div>
                   <div style={{ display:"flex", gap:4, marginTop:7, flexWrap:"wrap" }}>
                     {r.tags.slice(0,3).map(t => <span key={t} style={{ fontSize:9, padding:"2px 8px", background:"#1a1a1a", borderRadius:20, color:C.dim, textTransform:"uppercase", letterSpacing:"0.06em", border:`1px solid ${C.border}` }}>{t}</span>)}
@@ -7247,7 +7358,7 @@ const App = () => {
 
         {screen === "profile" && (
           <div style={{ flex:1, overflowY:"auto" }}>
-            <ProfileView member={currentUser} onUpdate={updateCurrentUser} pointsLog={pointsLog} onUpgrade={() => setShowUpgrade(true)} onRedeemPoints={handleRedeemPoints} />
+            <ProfileView member={currentUser} onUpdate={updateCurrentUser} pointsLog={pointsLog} onUpgrade={() => setShowUpgrade(true)} onRedeemPoints={handleRedeemPoints} theme={themeName} onToggleTheme={toggleTheme} />
           </div>
         )}
       </div>
