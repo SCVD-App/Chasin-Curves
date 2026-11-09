@@ -10,6 +10,11 @@
 //       Server now checks the token's email against :id on every
 //       member/garage request — closes the "type anyone's username"
 //       account-isolation gap found in beta.
+// v3.2: Home screen. The app now opens on a calm Home screen (primary
+//       vehicle hero photo, greeting, one icon per section) instead of the
+//       Roads map. Logo tap and a new Home tab bring you back to it.
+//       HOME_HIDES_NAV (just above HomeScreen) controls whether the
+//       bottom bar is hidden on Home.
 // v3.1: Light/dark theme toggle, per-device (localStorage, not synced
 //       to the member record). Added for Benn Warren, who found the
 //       dark-only palette hard to read.
@@ -6566,6 +6571,119 @@ const LoginScreen = ({ onRequestCode, onVerifyCode, onResend, step, loading, err
 };
 
 // ─── MAIN APP ─────────────────────────────────────────────────
+// ============================================================
+// v3.2 — HOME SCREEN
+// A softer front door than dropping straight onto the Roads map:
+// the member's primary vehicle hero shot as a full-bleed backdrop,
+// a "Hi <name>" greeting, and one round icon per section.
+// Hero resolution mirrors the Garage (heroPhoto id -> first photo ->
+// avatar). With no vehicle or photo it falls back to a dark brand
+// gradient with the dotted ribbon curve from the logo.
+// Colours here are deliberately fixed (not theme-aware) because the
+// text sits on a photo, not on the page background.
+// ============================================================
+const HOME_HIDES_NAV = true; // true = the five icons ARE the navigation on Home; false = keep the bottom bar on Home too
+
+const homeHeroUrl = (v) => {
+  if (!v) return null;
+  const photos = v.photos || [];
+  if (v.heroPhoto) {
+    const hero = photos.find(p => p.id === v.heroPhoto);
+    if (hero) return hero.url;
+  }
+  return photos.length > 0 ? photos[0].url : (v.avatar || null);
+};
+
+const HomeIcon = ({ name }) => {
+  const p = { width: 26, height: 26, viewBox: "0 0 24 24", fill: "none", stroke: "#C9A84C", strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true };
+  if (name === "roads") return (<svg {...p}><path d="M8 21L10.5 3" /><path d="M16 21L13.5 3" /><path d="M12 20v-3M12 14.5v-3M12 9V6" /></svg>);
+  if (name === "trips") return (<svg {...p}><path d="M6 21V4" /><path d="M6 5h11l-2.6 3.6L17 12H6" /></svg>);
+  if (name === "garage") return (<svg {...p}><path d="M3 15v-3.2l1.7-3.6A2 2 0 0 1 6.5 7h11a2 2 0 0 1 1.8 1.2l1.7 3.6V15" /><path d="M3 15h18" /><circle cx="7.5" cy="16.5" r="2" fill="#0d0d0d" /><circle cx="16.5" cy="16.5" r="2" fill="#0d0d0d" /></svg>);
+  if (name === "logbook") return (<svg {...p}><path d="M5 4h11a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2V4z" /><path d="M9 9h6M9 13h6" /></svg>);
+  return (<svg {...p}><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.5 3.1-6 7-6s7 2.5 7 6" /></svg>);
+};
+
+const HOME_TILES = [
+  { id: "roads",   label: "Roads" },
+  { id: "trips",   label: "Trips" },
+  { id: "garage",  label: "Garage" },
+  { id: "logbook", label: "Logbook" },
+  { id: "profile", label: "Profile" },
+];
+
+const HomeScreen = ({ member, onGo }) => {
+  const garage = member.garage || [];
+  const vehicle = garage.find(v => v.primary) || garage[0] || null;
+  const heroUrl = homeHeroUrl(vehicle);
+  const [imgOk, setImgOk] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => { setImgOk(true); setLoaded(false); }, [heroUrl]);
+  const first = (member.displayName || "").trim().split(/\s+/)[0] || "mate";
+  const rideName = vehicle ? [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(" ") : "";
+  const showPhoto = !!heroUrl && imgOk;
+  const dots = [];
+  for (let i = 0; i < 36; i++) {
+    const t = i / 35;
+    dots.push(<circle key={i} cx={20 + t * 300} cy={46 - Math.sin(t * Math.PI) * 30 - t * 6} r={2.4 + Math.sin(t * Math.PI) * 1.6} fill="#C9A84C" opacity={0.35 + 0.55 * Math.sin(t * Math.PI)} />);
+  }
+  return (
+    <div style={{ flex: 1, position: "relative", overflow: "hidden", background: "#0d0d0d", minHeight: 0 }}>
+      <style>{`
+        @keyframes ccHomeDrift { from { transform: scale(1.04); } to { transform: scale(1.11); } }
+        @keyframes ccHomeRise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+        .cc-home-tile { transition: transform .15s ease, background .15s ease; }
+        .cc-home-tile:active { transform: scale(0.94); }
+        @media (prefers-reduced-motion: reduce) { .cc-home-img, .cc-home-rise { animation: none !important; } }
+      `}</style>
+      {/* Brand fallback — always underneath, so there's never a black flash while the photo loads */}
+      <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse 80% 45% at 50% 82%, #4a3815 0%, #1a1409 55%, #0d0d0d 100%)" }} />
+      {!showPhoto && (
+        <svg viewBox="0 0 340 70" style={{ position: "absolute", left: "50%", top: "22%", width: "78%", maxWidth: 420, transform: "translateX(-50%)", opacity: 0.9 }} aria-hidden="true">
+          {dots}
+          <circle cx="20" cy="46" r="5" fill="#C9A84C" />
+          <circle cx="320" cy="40" r="6" fill="#d9472f" />
+        </svg>
+      )}
+      {showPhoto && (
+        <img
+          className="cc-home-img"
+          src={heroUrl}
+          alt=""
+          onLoad={() => setLoaded(true)}
+          onError={() => setImgOk(false)}
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", opacity: loaded ? 1 : 0, transition: "opacity .7s ease", animation: "ccHomeDrift 30s ease-in-out infinite alternate" }}
+        />
+      )}
+      {/* Scrim: keeps the greeting and icons readable on any photo */}
+      <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to bottom, rgba(0,0,0,0.42) 0%, rgba(0,0,0,0.04) 26%, rgba(0,0,0,0.10) 48%, rgba(8,8,8,0.9) 100%)", pointerEvents: "none" }} />
+
+      <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "0 20px calc(env(safe-area-inset-bottom) + 26px)", display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
+        <div className="cc-home-rise" style={{ animation: "ccHomeRise .8s ease both", color: "#f5f3ee", textShadow: "0 2px 18px rgba(0,0,0,0.7)" }}>
+          <div style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 46, fontWeight: 600, fontStyle: "italic", lineHeight: 1.05 }}>Hi {first}</div>
+          <div style={{ fontFamily: "'Josefin Sans', sans-serif", fontSize: 13, letterSpacing: "0.16em", textTransform: "uppercase", marginTop: 10, opacity: 0.92 }}>What would you like to do today?</div>
+        </div>
+
+        <div className="cc-home-rise" style={{ animation: "ccHomeRise .8s .15s ease both", display: "flex", justifyContent: "center", gap: 14, marginTop: 26, width: "100%", maxWidth: 440 }}>
+          {HOME_TILES.map(t => (
+            <button key={t.id} onClick={() => onGo(t.id)} aria-label={t.label} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
+              <span className="cc-home-tile" style={{ width: 56, height: 56, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(13,13,13,0.55)", border: "1px solid rgba(201,168,76,0.5)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", boxShadow: "0 6px 20px rgba(0,0,0,0.45)" }}>
+                <HomeIcon name={t.id} />
+              </span>
+              <span style={{ fontFamily: "'Josefin Sans', sans-serif", fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", color: "#f5f3ee", textShadow: "0 1px 8px rgba(0,0,0,0.9)" }}>{t.label}</span>
+            </button>
+          ))}
+        </div>
+
+        <div style={{ marginTop: 22, minHeight: 16, fontFamily: "'Josefin Sans', sans-serif", fontSize: 10, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(245,243,238,0.7)", textShadow: "0 1px 8px rgba(0,0,0,0.9)" }}>
+          {vehicle
+            ? <span>{vehicle.primary ? "★ " : ""}{rideName || "Your ride"}</span>
+            : <button onClick={() => onGo("garage")} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", font: "inherit", letterSpacing: "inherit", textTransform: "inherit", color: "#C9A84C" }}>Add your first ride →</button>}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const App = () => {
   // v3.1: light/dark theme. themeName is only used to trigger a
   // re-render — the actual colour values live on the mutable `C`
@@ -6610,7 +6728,7 @@ const App = () => {
   const wakeLockRef = useRef(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [selected, setSelected] = useState(null);
-  const [screen, setScreen] = useState("roads");
+  const [screen, setScreen] = useState("home");
   const [showAddRoad, setShowAddRoad] = useState(false);
   const [roadPrefill, setRoadPrefill] = useState(null); // set by the Trip Postcard "Add as Road" flow
   const [selectedVehicle, setSelectedVehicle] = useState(null);
@@ -7162,7 +7280,7 @@ const App = () => {
     <div style={{ display:"flex", flexDirection:"column", height:"100dvh", background:C.midnight, color:C.bone }}>
 
       <header style={{ background:C.midnight, borderBottom:`1px solid ${C.border}`, padding:"13px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0, zIndex:50 }}>
-        <div onClick={() => { setScreen("roads"); setShowRoadDetail(false); }} style={{ cursor:"pointer" }}>
+        <div onClick={() => { setScreen("home"); setShowRoadDetail(false); }} style={{ cursor:"pointer" }}>
           <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:22, fontWeight:700, color:C.champagne, lineHeight:1 }}>
             Chasin<span style={{ color:C.red }}>'</span> Curves
           </div>
@@ -7258,6 +7376,10 @@ const App = () => {
       )}
 
       <div style={{ flex:1, overflow:"hidden", display:"flex", position:"relative" }}>
+
+        {screen === "home" && (
+          <HomeScreen member={currentUser} onGo={id => { if (id === "roads") setShowRoadDetail(false); setScreen(id); }} />
+        )}
 
         {screen === "roads" && !showRoadDetail && (
           <div style={{ flex:1, overflowY:"auto" }}>
@@ -7363,8 +7485,10 @@ const App = () => {
         )}
       </div>
 
+      {!(screen === "home" && HOME_HIDES_NAV) && (
       <nav style={{ background:C.midnight, borderTop:`1px solid ${C.border}`, display:"flex", flexShrink:0, paddingBottom:"env(safe-area-inset-bottom)" }}>
         {[
+          { id:"home", icon:"🏠", label:"Home" },
           { id:"roads", icon:"🛣", label:"Roads" },
           { id:"trips", icon:"🏁", label:"Trips" },
           { id:"garage", icon:"🚗", label:"Garage" },
@@ -7378,6 +7502,7 @@ const App = () => {
           </button>
         ))}
       </nav>
+      )}
 
       {showAddRoad && (
         <AddRoadModal
