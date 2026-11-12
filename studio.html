@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
+<link rel="manifest" href="studio-manifest.json">
+<link rel="icon" href="studio-icon-192.png">
+<link rel="apple-touch-icon" href="studio-apple-touch-icon.png">
+<meta name="theme-color" content="#0d0d0d">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="CC Studio">
 <title>Chasin' Curves Studio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -65,6 +72,12 @@ body.os-text .o-logo{display:none!important}
 .mode button{flex:1;min-height:42px;border-radius:10px;border:0;background:transparent;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;font-size:12px;color:var(--muted)}
 .mode button[aria-pressed="true"]{background:var(--champ);color:var(--mid)}
 input[type=number],input.num{width:78px;background:var(--mid);border:1px solid var(--line);border-radius:8px;padding:7px 8px;font-size:14px}
+.vh{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none}
+label.btn{display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+#vpick{margin-bottom:10px;display:flex;flex-direction:column;gap:6px}
+#vpick label{width:100%;min-height:52px;font-size:16px}
+#vmsg{font-size:13px;color:var(--muted);text-align:center;min-height:18px}
+#vmsg.ok{color:var(--ok)}
 .btn.sm{min-height:30px;padding:0 10px;font-size:12px;border-radius:8px}
 .t{font-size:12px;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:flex;align-items:center;gap:6px}
 .beat{background:var(--mid);border:1px solid var(--line);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px}
@@ -99,7 +112,7 @@ input[type=number],input.num{width:78px;background:var(--mid);border:1px solid v
 
   <details open class="vd"><summary>Clip</summary><div class="body">
     <div class="drop">Choose a clip from your phone or computer<br>
-      <span class="file" style="margin-top:8px"><span class="btn cta">Choose video</span><input type="file" id="vfile" accept="video/*"></span></div>
+      <label class="btn cta" for="vfile" style="margin-top:8px">Choose video</label><input type="file" id="vfile" class="vh" accept="video/*,.mp4,.mov,.m4v,.webm,.3gp"></div>
     <div class="hint" id="vname"></div><div class="hint" id="vhint"></div>
     <div class="row"><label class="t">Start <input type="number" id="vin" step="0.1" min="0" value="0"></label><button class="btn sm" id="vinNow">set to now</button>
       <label class="t">End <input type="number" id="vout" step="0.1" min="0" value="0"></label><button class="btn sm" id="voutNow">set to now</button></div>
@@ -144,7 +157,7 @@ input[type=number],input.num{width:78px;background:var(--mid);border:1px solid v
   </div></details>
 
   <details open class="vd"><summary>Music and sound</summary><div class="body">
-    <div class="row"><span class="file"><span class="btn">Choose a track</span><input type="file" id="mfile" accept="audio/*"></span><span class="hint" id="mname">No track loaded.</span></div>
+    <div class="row"><label class="btn" for="mfile">Choose a track</label><input type="file" id="mfile" class="vh" accept="audio/*,.mp3,.m4a,.wav,.aac"><span class="hint" id="mname">No track loaded.</span></div>
     <div class="hint">Use music you own or have a licence for. It fades in and out and ends with the video.</div>
     <label class="rng"><span>Clip sound</span><input type="range" min="0" max="100" data-k="vOrig"><output data-o="vOrig"></output></label>
     <label class="rng"><span>Music</span><input type="range" min="0" max="100" data-k="vMus"><output data-o="vMus"></output></label>
@@ -154,7 +167,7 @@ input[type=number],input.num{width:78px;background:var(--mid);border:1px solid v
 
   <details open class="ph"><summary>Photo</summary><div class="body">
     <div class="drop" id="drop">Drop a photo here, paste one, or
-      <span class="file"><span class="btn" style="margin-left:6px">Choose photo</span><input type="file" id="file" accept="image/*"></span>
+      <label class="btn" for="file" style="margin-left:6px">Choose photo</label><input type="file" id="file" class="vh" accept="image/*">
     </div>
     <label class="rng"><span>Zoom</span><input type="range" min="1" max="4" step="0.01" data-k="zoom"><output data-o="zoom"></output></label>
     <div class="row"><button class="btn" id="reset">Reset framing</button><span class="hint">Drag the preview to reposition. Scroll to zoom.</span></div>
@@ -233,6 +246,7 @@ input[type=number],input.num{width:78px;background:var(--mid);border:1px solid v
 
 </div>
 <div id="stagewrap">
+  <div id="vpick" class="vd"><label class="btn cta" for="vfile" id="vpickbtn">Choose a video from this device</label><div id="vmsg" role="status"></div></div>
   <div id="stage"><canvas id="cv"></canvas></div>
   <div id="vbar" class="vd">
     <div class="row"><button class="btn cta" id="vplay" disabled style="min-width:84px">Play</button><input type="range" id="vscrub" min="0" max="10" step="0.01" value="0" aria-label="Scrub"></div>
@@ -632,7 +646,7 @@ $$('[data-k]').forEach(function (el) {
 });
 
 /* ---------- photo loading ---------- */
-function setStatus(msg, ok) { var s = $('#status'); s.textContent = msg; s.className = ok ? 'ok' : ''; }
+function setStatus(msg, ok) { var s = $('#status'); s.textContent = msg; s.className = ok ? 'ok' : ''; var m = $('#vmsg'); if (m) { m.textContent = msg; m.className = ok ? 'ok' : ''; } }
 function normalise(src) {
   var w = src.width || src.naturalWidth, h = src.height || src.naturalHeight, m = Math.max(w, h);
   if (m <= 4200) return { src: src, w: w, h: h };
@@ -660,7 +674,7 @@ function loadFile(file) {
 $('#file').addEventListener('change', function (e) { loadFile(e.target.files[0]); e.target.value = ''; });
 ['dragenter', 'dragover'].forEach(function (ev) { document.addEventListener(ev, function (e) { e.preventDefault(); $('#drop').classList.add('on'); }); });
 ['dragleave', 'drop'].forEach(function (ev) { document.addEventListener(ev, function (e) { e.preventDefault(); $('#drop').classList.remove('on'); }); });
-document.addEventListener('drop', function (e) { var f = e.dataTransfer && e.dataTransfer.files[0]; if (!f) return; if (/^video\//.test(f.type)) { if (typeof loadClip === 'function') { S.mode = 'video'; saveStore(); applyMode(); loadClip(f); } } else if (/^audio\//.test(f.type)) loadMusic(f); else loadFile(f); });
+document.addEventListener('drop', function (e) { var f = e.dataTransfer && e.dataTransfer.files[0]; if (!f) return; if (isVideoFile(f)) { if (typeof loadClip === 'function') { S.mode = 'video'; saveStore(); applyMode(); loadClip(f); } } else if (/^audio\//.test(f.type)) loadMusic(f); else loadFile(f); });
 document.addEventListener('paste', function (e) {
   var items = (e.clipboardData && e.clipboardData.items) || [];
   for (var i = 0; i < items.length; i++) if (items[i].type.indexOf('image') === 0) { loadFile(items[i].getAsFile()); break; }
@@ -805,16 +819,19 @@ function loadMusic(file) {
 }
 
 /* ---------- loading a clip ---------- */
+function isVideoFile(f) { return f && (/^video\//.test(f.type) || /\.(mp4|mov|m4v|webm|3gp|mkv)$/i.test(f.name || '')); }
 function loadClip(file) {
-  if (!file || !/^video\//.test(file.type)) { setStatus('That doesn’t look like a video file.'); return; }
+  if (!isVideoFile(file)) { setStatus('That doesn’t look like a video file.'); return; }
   stopPlay();
   if (V.url) URL.revokeObjectURL(V.url);
-  var el = document.createElement('video'); el.playsInline = true; el.preload = 'auto'; el.setAttribute('playsinline', '');
-  var url = URL.createObjectURL(file);
-  el.addEventListener('error', function () { setStatus('This browser couldn’t read that video. Phone and 360 cameras often save H.265 (HEVC). Export it as H.264 MP4 from the camera app or Resolve and try again.'); });
+  var el = document.createElement('video'); el.playsInline = true; el.muted = false; el.preload = 'auto'; el.setAttribute('playsinline', ''); el.setAttribute('webkit-playsinline', '');
+  var url = URL.createObjectURL(file), inited = false;
+  setStatus('Opening ' + (file.name || 'video') + '…');
+  el.addEventListener('error', function () { if (!inited) setStatus('This browser couldn’t read that video. Phone and 360 cameras often save H.265 (HEVC). Export it as H.264 MP4 from the camera app or Resolve and try again.'); });
   el.addEventListener('seeked', function () { if (!playing && !exporting) draw(); });
-  el.addEventListener('loadeddata', function () {
-    V.el = el; V.url = url; V.name = file.name; V.w = el.videoWidth; V.h = el.videoHeight; V.dur = isFinite(el.duration) ? el.duration : 0; V.ready = true;
+  function ready() {
+    if (inited || !el.videoWidth) return; inited = true;
+    V.el = el; V.url = url; V.name = file.name || 'clip'; V.w = el.videoWidth; V.h = el.videoHeight; V.dur = isFinite(el.duration) ? el.duration : 0; V.ready = true;
     tIn = 0; tOut = V.dur || 10; tNow = 0; S.vzoom = 1; S.vpanX = 0; S.vpanY = 0;
     if (AC) wireVideo();
     $('#vname').textContent = V.name + ' · ' + V.w + '×' + V.h + ' · ' + fmtT(V.dur);
@@ -824,10 +841,14 @@ function loadClip(file) {
     $('#vhint').textContent = hint;
     $('#vin').value = r1(tIn); $('#vout').value = r1(tOut);
     $('#vplay').disabled = false; $('#expVid').disabled = false; $('#vcover').disabled = false;
-    syncVideoBar(); syncUI(); renderTrack(); refreshCaption(); seek(0);
+    $('#vpickbtn').textContent = 'Change video';
+    syncVideoBar(); syncUI(); renderTrack(); refreshCaption(); seek(0); draw();
     setStatus('Clip loaded. Press play, then add your words.', true);
-  });
-  el.src = url;
+  }
+  el.addEventListener('loadedmetadata', function () { setTimeout(ready, 60); });
+  el.addEventListener('loadeddata', ready);
+  el.addEventListener('canplay', ready);
+  el.src = url; try { el.load(); } catch (e) {}
 }
 
 /* ---------- transport ---------- */
@@ -1056,7 +1077,9 @@ LOGO.img.onload = function () {
       var m = Math.max(d[i], d[i + 1], d[i + 2]);
       if (m < 46) { var f = Math.max(0, (m - 20) / 26); f *= f; for (var c = 0; c < 3; c++) d[i + c] = 13 + (d[i + c] - 13) * f; }
     }
-    og.putImageData(id, 0, 0); LOGO.cv = oc;
+    og.putImageData(id, 0, 0);
+    og.fillStyle = KIT.mid; og.fillRect(50, 381, oc.width - 100, 30);   /* wipe the baked-in tagline; it is redrawn crisp and brighter */
+    LOGO.cv = oc;
   } catch (e) { LOGO.cv = null; }
   LOGO.ok = true; draw();
 };
@@ -1071,7 +1094,13 @@ function drawLogoOutro(g, W, H, u, s, tt) {
     g.translate(cx, top + size / 2); g.scale(k, k);
     g.drawImage(LOGO.cv || LOGO.img, -size / 2, -size / 2, size, size); g.restore();
   }
-  var ly = top + size * 0.865, l1 = S.lgLine.trim(), l2 = S.lgLine2.trim();
+  if (LOGO.cv) {
+    var tg = 'ROADS \u00B7 RIVERS \u00B7 RIFFS', tpx = Math.max(12, size * 0.034), tw = size * 0.68;
+    g.save(); g.globalAlpha *= A(0.6); g.font = fontS(tpx, 400); g.textBaseline = 'alphabetic'; g.fillStyle = '#7FA6D6';
+    var base = 0; for (var ti = 0; ti < tg.length; ti++) base += g.measureText(tg[ti]).width;
+    drawSpaced(g, tg, cx, top + size * 0.783, Math.max(0, (tw - base) / (tg.length - 1)), 'center'); g.restore();
+  }
+  var ly = top + size * 0.895, l1 = S.lgLine.trim(), l2 = S.lgLine2.trim();
   if (l1) { g.save(); g.globalAlpha *= A(1); g.textAlign = 'center'; g.textBaseline = 'alphabetic'; g.font = fontS(Math.max(22, size * 0.046), 400); g.fillStyle = '#D4A94A'; drawSpaced(g, l1, cx, ly, size * 0.004, 'center'); g.restore(); }
   if (l2) { g.save(); g.globalAlpha *= A(2) * 0.9; g.textAlign = 'center'; g.font = fontQ5(Math.max(28, size * 0.075)); g.fillStyle = KIT.bone; g.fillText(l2, cx, ly + size * 0.13); g.restore(); }
 }
@@ -1195,7 +1224,7 @@ function applyMode() {
   if (!vid) stopPlay();
   syncUI(); refreshCaption(); draw(); updateBar();
 }
-$('#vfile').addEventListener('change', function (e) { loadClip(e.target.files[0]); e.target.value = ''; });
+$('#vfile').addEventListener('change', function (e) { var f = e.target.files && e.target.files[0]; if (f) loadClip(f); e.target.value = ''; });
 $('#mfile').addEventListener('change', function (e) { loadMusic(e.target.files[0]); e.target.value = ''; });
 $('#vplay').addEventListener('click', function () { if (playing) stopPlay(); else startPlay(); });
 $('#vscrub').addEventListener('input', function (e) { if (playing) stopPlay(); seek(parseFloat(e.target.value)); });
